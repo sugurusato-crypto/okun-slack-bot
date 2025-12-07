@@ -1,0 +1,87 @@
+{
+  "urgent": [
+    {
+      "id": 1,
+      "task": "新コミュニティ名の正式決定",
+      "assignee": "-",
+      "project": "P11_コミュニティ",
+      "deadline": "12/9",
+      "status": "未着手"
+    },
+    {
+      "id": 2,
+      "task": "コンセプト・社会課題の言語化",
+      "assignee": "-",
+      "project": "P11_コミュニティ",
+      "deadline": "12/9",
+      "status": "未着手"
+    }
+  ],
+  "thisWeek": [
+    {
+      "id": 3,
+      "task": "Xアカウントのコンセプト会議",
+      "assignee": "佐藤",
+      "project": "SNS運用",
+      "deadline": "12/8 21:00",
+      "status": "未着手"
+    },
+    {
+      "id": 4,
+      "task": "水曜日 開発ミーティング",
+      "assignee": "-",
+      "project": "開発",
+      "deadline": "12/10",
+      "status": "未着手"
+    },
+    {
+      "id": 5,
+      "task": "移行方針・料金プランの確定",
+      "assignee": "-",
+      "project": "P11_コミュニティ",
+      "deadline": "12/12",
+      "status": "未着手"
+    },
+    {
+      "id": 6,
+      "task": "新Discord構成案 FIX",
+      "assignee": "シュン",
+      "project": "P11_コミュニティ",
+      "deadline": "12/12",
+      "status": "未着手"
+    },
+    {
+      "id": 7,
+      "task": "動画DB設計・要件定義",
+      "assignee": "太陽",
+      "project": "P11_コミュニティ",
+      "deadline": "12/14",
+      "status": "未着手"
+    },
+    {
+      "id": 8,
+      "task": "アプリMVP実装完了",
+      "assignee": "太陽",
+      "project": "P11_コミュニティ",
+      "deadline": "12/14",
+      "status": "未着手"
+    },
+    {
+      "id": 9,
+      "task": "1月〜3月のコンテンツ設計",
+      "assignee": "傑",
+      "project": "P11_コミュニティ",
+      "deadline": "12/14",
+      "status": "未着手"
+    },
+    {
+      "id": 10,
+      "task": "資料作成",
+      "assignee": "佐藤",
+      "project": "未分類",
+      "deadline": "12/10",
+      "status": "未着手"
+    }
+  ],
+  "completed": []
+}
