@@ -1288,8 +1288,13 @@ app.post('/slack/events', async (req, res) => {
           // 会話履歴に追加（ユーザーメッセージ）
           addToUserHistory(userId, userName, 'user', userMessage, { type: 'thread', channel, threadTs });
 
+          // スレッドの会話履歴をコンテキストに含める
+          const contextMessage = conversationHistory
+            ? `【スレッドの会話履歴】\n${conversationHistory}\n【今のメッセージ】\n${userName}: ${userMessage}`
+            : userMessage;
+
           // エージェントで返答生成（ツール機能付き）
-          const agentResponse = await runAgent(userMessage, userId, userName);
+          const agentResponse = await runAgent(contextMessage, userId, userName);
 
           // 会話履歴に追加（アシスタント応答）
           addToUserHistory(userId, userName, 'assistant', agentResponse, { type: 'thread', channel, threadTs });
