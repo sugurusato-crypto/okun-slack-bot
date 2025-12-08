@@ -11,91 +11,324 @@ app.use(express.json());
 
 // Gemini API クライアント
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+
+// ==========================================
+// ツール定義（Function Declarations）
+// ==========================================
+const tools = [{
+  functionDeclarations: [
+    {
+      name: "addTask",
+      description: "新しいタスクを追加する。ユーザーがタスクの追加を依頼した時に使用する。",
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          task: {
+            type: "STRING",
+            description: "タスクの内容・名前"
+          },
+          assignee: {
+            type: "STRING",
+            description: "担当者名（佐藤、太陽、シュン、大輝、河原、傑など）"
+          },
+          deadline: {
+            type: "STRING",
+            description: "期限（例: 12/15, 12/20 18:00）"
+          },
+          priority: {
+            type: "STRING",
+            enum: ["urgent", "thisWeek"],
+            description: "優先度: urgent（緊急）またはthisWeek（今週）"
+          },
+          project: {
+            type: "STRING",
+            description: "プロジェクト名（任意）"
+          }
+        },
+        required: ["task"]
+      }
+    },
+    {
+      name: "completeTask",
+      description: "タスクを完了にする。ユーザーがタスクの完了を報告した時に使用する。",
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          taskId: {
+            type: "NUMBER",
+            description: "完了するタスクのID番号"
+          },
+          taskName: {
+            type: "STRING",
+            description: "タスク名で検索して完了にする（IDがわからない場合）"
+          }
+        }
+      }
+    },
+    {
+      name: "deleteTask",
+      description: "タスクを削除する。ユーザーがタスクの削除を依頼した時に使用する。",
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          taskId: {
+            type: "NUMBER",
+            description: "削除するタスクのID番号"
+          },
+          taskName: {
+            type: "STRING",
+            description: "タスク名で検索して削除する（IDがわからない場合）"
+          }
+        }
+      }
+    },
+    {
+      name: "listTasks",
+      description: "タスク一覧を取得する。ユーザーがタスクの確認・表示を依頼した時に使用する。",
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          filter: {
+            type: "STRING",
+            enum: ["all", "urgent", "thisWeek", "completed", "byAssignee"],
+            description: "フィルター: all（全て）, urgent（緊急のみ）, thisWeek（今週のみ）, completed（完了済み）, byAssignee（担当者別）"
+          },
+          assignee: {
+            type: "STRING",
+            description: "担当者でフィルターする場合の担当者名"
+          }
+        }
+      }
+    },
+    {
+      name: "searchTasks",
+      description: "タスクを検索する。キーワードでタスクを探す時に使用する。",
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          query: {
+            type: "STRING",
+            description: "検索キーワード"
+          }
+        },
+        required: ["query"]
+      }
+    },
+    {
+      name: "updateTaskStatus",
+      description: "タスクのステータスを更新する。進捗状況を変更する時に使用する。",
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          taskId: {
+            type: "NUMBER",
+            description: "更新するタスクのID番号"
+          },
+          status: {
+            type: "STRING",
+            enum: ["未着手", "進行中", "レビュー中", "完了"],
+            description: "新しいステータス"
+          }
+        },
+        required: ["taskId", "status"]
+      }
+    },
+    {
+      name: "sendReminder",
+      description: "特定のメンバーにリマインダーDMを送信する",
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          assignee: {
+            type: "STRING",
+            description: "リマインダーを送る担当者名"
+          },
+          message: {
+            type: "STRING",
+            description: "リマインダーメッセージ（任意、なければ自動生成）"
+          }
+        },
+        required: ["assignee"]
+      }
+    }
+  ]
+}];
+
+// Geminiモデル（Function Calling対応）
+const model = genAI.getGenerativeModel({
+  model: 'gemini-2.5-flash',
+  tools: tools,
+  systemInstruction: `あなたは「オーくん」、Uravation株式会社のフレンドリーなAIアシスタントです。
+チームメンバー（佐藤、太陽、シュン、大輝、河原、傑など）のタスク管理をサポートします。
+
+【性格・話し方】
+- 明るくてフレンドリー、でも仕事もしっかりできる
+- 敬語は使わず、タメ口でカジュアルに話す
+- 「〜だよ」「〜だね」「〜かな？」などの口調
+- 適度に絵文字を使う
+- 共感力が高く、相手の気持ちに寄り添う
+
+【できること】
+- タスクの追加・削除・完了・検索（ツールを使って実行）
+- タスク管理の相談やアドバイス
+- 雑談や相談相手
+- アイデア出しのサポート
+- 励ましや応援
+- リマインダー送信
+
+【大切にしていること】
+- ユーザーの話をちゃんと聞く
+- 押し付けがましくならない
+- 具体的で実用的なアドバイス
+- ポジティブな雰囲気を大切に
+
+あなたはエージェントとして、ユーザーの依頼に応じて適切なツール（関数）を呼び出してタスク操作を実行できるよ。
+複数のツールを組み合わせて使うこともできるし、雑談だけでもOK！
+回答はSlack向けに簡潔に、見やすくしてね。`
+});
 
 // タスクファイルのパス（永続化用）
 const TASKS_FILE = path.join(__dirname, 'tasks.json');
 
-// 会話履歴ファイル（ユーザーごと）
-const CONVERSATION_FILE = path.join(__dirname, 'conversations.json');
-const MAX_HISTORY = 10; // ユーザーごとに最新10件まで保持
+// ==========================================
+// ユーザー別会話履歴管理
+// ==========================================
+const CONVERSATIONS_DIR = path.join(__dirname, 'conversations');
+const LEARNINGS_FILE = path.join(__dirname, 'learnings.json');
+const MAX_HISTORY_PER_USER = 50; // ユーザーごとの最大履歴数
 
-// 会話履歴を読み込む
-function loadConversations() {
+// conversationsディレクトリがなければ作成
+if (!fs.existsSync(CONVERSATIONS_DIR)) {
+  fs.mkdirSync(CONVERSATIONS_DIR, { recursive: true });
+}
+
+// ユーザー別会話履歴を読み込む
+function loadUserConversation(userId) {
+  const filePath = path.join(CONVERSATIONS_DIR, `${userId}.json`);
   try {
-    if (fs.existsSync(CONVERSATION_FILE)) {
-      return JSON.parse(fs.readFileSync(CONVERSATION_FILE, 'utf-8'));
+    if (fs.existsSync(filePath)) {
+      return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
     }
   } catch (e) {
-    console.error('Failed to load conversations:', e);
+    console.error(`Failed to load conversation for ${userId}:`, e);
   }
-  return {};
+  return {
+    userId: userId,
+    userName: null,
+    messages: [],
+    preferences: {},
+    lastInteraction: null
+  };
 }
 
-// 会話履歴を保存
-function saveConversations() {
+// ユーザー別会話履歴を保存
+function saveUserConversation(userId, data) {
+  const filePath = path.join(CONVERSATIONS_DIR, `${userId}.json`);
   try {
-    fs.writeFileSync(CONVERSATION_FILE, JSON.stringify(conversations, null, 2));
+    // 最大履歴数を超えたら古いものを削除
+    if (data.messages.length > MAX_HISTORY_PER_USER) {
+      data.messages = data.messages.slice(-MAX_HISTORY_PER_USER);
+    }
+    data.lastInteraction = new Date().toISOString();
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
   } catch (e) {
-    console.error('Failed to save conversations:', e);
+    console.error(`Failed to save conversation for ${userId}:`, e);
   }
 }
 
-// 会話履歴に追加
-function addToHistory(userId, role, message) {
-  if (!conversations[userId]) {
-    conversations[userId] = [];
+// 会話を追加
+function addToUserHistory(userId, userName, role, content, context = {}) {
+  const data = loadUserConversation(userId);
+  if (userName && !data.userName) {
+    data.userName = userName;
   }
-  conversations[userId].push({
-    role, // 'user' or 'assistant'
-    content: message,
-    timestamp: new Date().toISOString()
+  data.messages.push({
+    role: role, // 'user' or 'assistant'
+    content: content,
+    timestamp: new Date().toISOString(),
+    context: context // channel, thread_ts など
   });
-  // 最新N件のみ保持
-  if (conversations[userId].length > MAX_HISTORY) {
-    conversations[userId] = conversations[userId].slice(-MAX_HISTORY);
+  saveUserConversation(userId, data);
+  return data;
+}
+
+// ユーザーの最近の会話履歴を取得（コンテキスト用）
+function getUserRecentHistory(userId, limit = 10) {
+  const data = loadUserConversation(userId);
+  return data.messages.slice(-limit);
+}
+
+// ==========================================
+// 匿名化学習データ
+// ==========================================
+function loadLearnings() {
+  try {
+    if (fs.existsSync(LEARNINGS_FILE)) {
+      return JSON.parse(fs.readFileSync(LEARNINGS_FILE, 'utf-8'));
+    }
+  } catch (e) {
+    console.error('Failed to load learnings:', e);
   }
-  saveConversations();
+  return {
+    patterns: [], // よくある質問パターン
+    insights: [], // 学んだこと
+    updatedAt: null
+  };
 }
 
-// 会話履歴を取得
-function getConversationHistory(userId) {
-  return conversations[userId] || [];
+function saveLearnings(data) {
+  try {
+    data.updatedAt = new Date().toISOString();
+    fs.writeFileSync(LEARNINGS_FILE, JSON.stringify(data, null, 2));
+  } catch (e) {
+    console.error('Failed to save learnings:', e);
+  }
 }
 
-// 会話履歴をプロンプト用にフォーマット
-function formatConversationHistory(userId) {
-  const history = getConversationHistory(userId);
-  if (history.length === 0) return '';
-
-  return '\n\n【直近の会話履歴】\n' +
-    history.map(h => `${h.role === 'user' ? 'ユーザー' : 'オーくん'}: ${h.content}`).join('\n');
+// 学びを追加（匿名化済みの洞察のみ）
+function addLearning(type, content) {
+  const learnings = loadLearnings();
+  if (type === 'pattern') {
+    // 重複チェック
+    if (!learnings.patterns.includes(content)) {
+      learnings.patterns.push(content);
+      if (learnings.patterns.length > 100) {
+        learnings.patterns = learnings.patterns.slice(-100);
+      }
+    }
+  } else if (type === 'insight') {
+    learnings.insights.push({
+      content: content,
+      addedAt: new Date().toISOString()
+    });
+    if (learnings.insights.length > 50) {
+      learnings.insights = learnings.insights.slice(-50);
+    }
+  }
+  saveLearnings(learnings);
 }
 
-let conversations = loadConversations();
-
-// CEO（佐藤）のSlack ID - リマインド報告先
+// CEO（佐藤）のSlack ID
 const CEO_SLACK_ID = 'U06MXBSJKC3';
 
-// メンバーマッピング（担当者名 → Slack User ID）
+// メンバーマッピング
 const MEMBER_SLACK_IDS = {
-  '佐藤': 'U06MXBSJKC3',     // 佐藤傑
-  '傑': 'U06MXBSJKC3',       // 佐藤傑（同一）
-  '大輝': 'U09N2NA1UTW',     // 吉田 大輝
-  '河原': 'U098D4VNTV1',     // 河原将太
-  '太陽': 'U06MXBSJKC3',     // TODO: 太陽さんのSlack ID要確認
-  'シュン': 'U06MXBSJKC3',   // TODO: シュンさんのSlack ID要確認
-  // 他のメンバー
-  '木口': 'U06P9BL4XGA',     // 木口佳南
-  '福本': 'U06THQJEPH8',     // 福本華凛
-  '岩本': 'U074YSZ9UJ2',     // 岩本宙士
-  '中本': 'U098HS2GK6E',     // 中本和將
-  '馬目': 'U09N8R5T4QY',     // 馬目滉
-  '甲': 'U09T74ZCEK1',       // 甲大希
-  'daiki': 'U09T74ZCEK1',    // 甲大希 Daiki Kabuto
-  'Daiki': 'U09T74ZCEK1',    // 甲大希 Daiki Kabuto
-  'yusei': 'U09V1JZHKGQ',    // Yusei Tataka
-  'Yusei': 'U09V1JZHKGQ',    // Yusei Tataka
+  '佐藤': 'U06MXBSJKC3',
+  '傑': 'U06MXBSJKC3',
+  '大輝': 'U09N2NA1UTW',
+  '河原': 'U098D4VNTV1',
+  '太陽': 'U06MXBSJKC3',
+  'シュン': 'U06MXBSJKC3',
+  '木口': 'U06P9BL4XGA',
+  '福本': 'U06THQJEPH8',
+  '岩本': 'U074YSZ9UJ2',
+  '中本': 'U098HS2GK6E',
+  '馬目': 'U09N8R5T4QY',
+  '甲': 'U09T74ZCEK1',
+  'daiki': 'U09T74ZCEK1',
+  'Daiki': 'U09T74ZCEK1',
+  'yusei': 'U09V1JZHKGQ',
+  'Yusei': 'U09V1JZHKGQ',
 };
 
 // タスクを読み込む
@@ -108,162 +341,430 @@ function loadTasks() {
     console.error('Failed to load tasks:', e);
   }
   return {
-    urgent: [
-      { id: 1, task: "新コミュニティ名の正式決定", assignee: "-", project: "P11_コミュニティ", deadline: "12/9", status: "未着手" },
-      { id: 2, task: "コンセプト・社会課題の言語化", assignee: "-", project: "P11_コミュニティ", deadline: "12/9", status: "未着手" }
-    ],
-    thisWeek: [
-      { id: 3, task: "Xアカウントのコンセプト会議", assignee: "佐藤", project: "SNS運用", deadline: "12/8 21:00", status: "未着手" },
-      { id: 4, task: "水曜日 開発ミーティング", assignee: "-", project: "開発", deadline: "12/10", status: "未着手" },
-      { id: 5, task: "移行方針・料金プランの確定", assignee: "-", project: "P11_コミュニティ", deadline: "12/12", status: "未着手" },
-      { id: 6, task: "新Discord構成案 FIX", assignee: "シュン", project: "P11_コミュニティ", deadline: "12/12", status: "未着手" },
-      { id: 7, task: "動画DB設計・要件定義", assignee: "太陽", project: "P11_コミュニティ", deadline: "12/14", status: "未着手" },
-      { id: 8, task: "アプリMVP実装完了", assignee: "太陽", project: "P11_コミュニティ", deadline: "12/14", status: "未着手" },
-      { id: 9, task: "1月〜3月のコンテンツ設計", assignee: "傑", project: "P11_コミュニティ", deadline: "12/14", status: "未着手" }
-    ],
+    urgent: [],
+    thisWeek: [],
     completed: []
   };
 }
 
-function saveTasks(tasks) {
-  fs.writeFileSync(TASKS_FILE, JSON.stringify(tasks, null, 2));
+function saveTasks(tasksData) {
+  fs.writeFileSync(TASKS_FILE, JSON.stringify(tasksData, null, 2));
 }
 
-function getNextId(tasks) {
-  const allTasks = [...tasks.urgent, ...tasks.thisWeek, ...tasks.completed];
+function getNextId(tasksData) {
+  const allTasks = [...tasksData.urgent, ...tasksData.thisWeek, ...tasksData.completed];
   return Math.max(...allTasks.map(t => t.id || 0), 0) + 1;
 }
 
 let tasks = loadTasks();
 
-// システムプロンプト（アクション検出付き）
-function getSystemPrompt() {
-  return `あなたはUravation株式会社のタスク管理アシスタントです。
-チームメンバー（佐藤、太陽、シュン、大輝、河原、傑など）のタスク管理をサポートします。
+// ==========================================
+// ツール実行関数
+// ==========================================
 
-現在のタスク一覧:
-【緊急】
-${tasks.urgent.map(t => `- [${t.id}] ${t.task} (担当:${t.assignee}, 期限:${t.deadline}, ${t.status})`).join('\n')}
+function executeAddTask(args) {
+  const newTask = {
+    id: getNextId(tasks),
+    task: args.task,
+    assignee: args.assignee || '-',
+    project: args.project || '未分類',
+    deadline: args.deadline || '未定',
+    status: '未着手',
+    createdAt: new Date().toISOString()
+  };
 
-【今週】
-${tasks.thisWeek.map(t => `- [${t.id}] ${t.task} (担当:${t.assignee}, 期限:${t.deadline}, ${t.status})`).join('\n')}
+  if (args.priority === 'urgent') {
+    tasks.urgent.push(newTask);
+  } else {
+    tasks.thisWeek.push(newTask);
+  }
+  saveTasks(tasks);
 
-【完了済み】
-${tasks.completed.slice(-5).map(t => `- [${t.id}] ${t.task} ✅`).join('\n') || 'なし'}
-
-## 重要: アクション検出
-ユーザーがタスクの追加・完了・削除を依頼した場合、回答の最後に以下のJSON形式でアクションを出力してください:
-
-タスク追加時:
-\`\`\`ACTION
-{"action":"ADD","task":"タスク名","assignee":"担当者名","deadline":"期限","priority":"urgent/thisWeek"}
-\`\`\`
-
-タスク完了時:
-\`\`\`ACTION
-{"action":"DONE","taskId":タスクID}
-\`\`\`
-
-タスク削除時:
-\`\`\`ACTION
-{"action":"DELETE","taskId":タスクID}
-\`\`\`
-
-通常の質問や表示のみの場合はACTIONブロックは不要です。
-回答はSlack向けに簡潔に、絵文字を使って見やすく。`;
+  return {
+    success: true,
+    message: `タスク「${newTask.task}」を追加しました`,
+    task: newTask
+  };
 }
 
-// Gemini APIを呼び出す関数（非同期）
-async function callGemini(prompt) {
-  try {
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    return response.text().trim();
-  } catch (error) {
-    console.error('Gemini API Error:', error.message);
-    throw error;
+function executeCompleteTask(args) {
+  let foundTask = null;
+
+  // IDで検索
+  if (args.taskId) {
+    for (const list of ['urgent', 'thisWeek']) {
+      const idx = tasks[list].findIndex(t => t.id === args.taskId);
+      if (idx !== -1) {
+        foundTask = tasks[list].splice(idx, 1)[0];
+        break;
+      }
+    }
+  }
+  // 名前で検索
+  else if (args.taskName) {
+    for (const list of ['urgent', 'thisWeek']) {
+      const idx = tasks[list].findIndex(t =>
+        t.task.toLowerCase().includes(args.taskName.toLowerCase())
+      );
+      if (idx !== -1) {
+        foundTask = tasks[list].splice(idx, 1)[0];
+        break;
+      }
+    }
+  }
+
+  if (foundTask) {
+    foundTask.status = '完了';
+    foundTask.completedAt = new Date().toISOString();
+    tasks.completed.push(foundTask);
+    saveTasks(tasks);
+    return {
+      success: true,
+      message: `タスク「${foundTask.task}」を完了にしました`,
+      task: foundTask
+    };
+  }
+
+  return {
+    success: false,
+    message: `タスクが見つかりませんでした`
+  };
+}
+
+function executeDeleteTask(args) {
+  let deletedTask = null;
+
+  // IDで検索
+  if (args.taskId) {
+    for (const list of ['urgent', 'thisWeek', 'completed']) {
+      const idx = tasks[list].findIndex(t => t.id === args.taskId);
+      if (idx !== -1) {
+        deletedTask = tasks[list].splice(idx, 1)[0];
+        break;
+      }
+    }
+  }
+  // 名前で検索
+  else if (args.taskName) {
+    for (const list of ['urgent', 'thisWeek', 'completed']) {
+      const idx = tasks[list].findIndex(t =>
+        t.task.toLowerCase().includes(args.taskName.toLowerCase())
+      );
+      if (idx !== -1) {
+        deletedTask = tasks[list].splice(idx, 1)[0];
+        break;
+      }
+    }
+  }
+
+  if (deletedTask) {
+    saveTasks(tasks);
+    return {
+      success: true,
+      message: `タスク「${deletedTask.task}」を削除しました`,
+      task: deletedTask
+    };
+  }
+
+  return {
+    success: false,
+    message: `タスクが見つかりませんでした`
+  };
+}
+
+function executeListTasks(args) {
+  const filter = args?.filter || 'all';
+  const assignee = args?.assignee;
+
+  let result = {
+    urgent: [],
+    thisWeek: [],
+    completed: []
+  };
+
+  switch (filter) {
+    case 'urgent':
+      result.urgent = tasks.urgent;
+      break;
+    case 'thisWeek':
+      result.thisWeek = tasks.thisWeek;
+      break;
+    case 'completed':
+      result.completed = tasks.completed.slice(-10);
+      break;
+    case 'byAssignee':
+      if (assignee) {
+        result.urgent = tasks.urgent.filter(t => t.assignee === assignee);
+        result.thisWeek = tasks.thisWeek.filter(t => t.assignee === assignee);
+      }
+      break;
+    default:
+      result = {
+        urgent: tasks.urgent,
+        thisWeek: tasks.thisWeek,
+        completed: tasks.completed.slice(-5)
+      };
+  }
+
+  return {
+    success: true,
+    tasks: result,
+    summary: {
+      urgentCount: result.urgent.length,
+      thisWeekCount: result.thisWeek.length,
+      completedCount: result.completed.length
+    }
+  };
+}
+
+function executeSearchTasks(args) {
+  const query = args.query.toLowerCase();
+  const allTasks = [...tasks.urgent, ...tasks.thisWeek, ...tasks.completed];
+
+  const found = allTasks.filter(t =>
+    t.task.toLowerCase().includes(query) ||
+    (t.assignee && t.assignee.toLowerCase().includes(query)) ||
+    (t.project && t.project.toLowerCase().includes(query))
+  );
+
+  return {
+    success: true,
+    query: args.query,
+    results: found,
+    count: found.length
+  };
+}
+
+function executeUpdateTaskStatus(args) {
+  let foundTask = null;
+
+  for (const list of ['urgent', 'thisWeek']) {
+    const task = tasks[list].find(t => t.id === args.taskId);
+    if (task) {
+      task.status = args.status;
+      foundTask = task;
+      break;
+    }
+  }
+
+  if (foundTask) {
+    saveTasks(tasks);
+    return {
+      success: true,
+      message: `タスク「${foundTask.task}」のステータスを「${args.status}」に更新しました`,
+      task: foundTask
+    };
+  }
+
+  return {
+    success: false,
+    message: `タスクID ${args.taskId} が見つかりませんでした`
+  };
+}
+
+async function executeSendReminder(args) {
+  const slackId = MEMBER_SLACK_IDS[args.assignee];
+  if (!slackId) {
+    return {
+      success: false,
+      message: `${args.assignee}さんのSlack IDが登録されていません`
+    };
+  }
+
+  // 担当者のタスクを取得
+  const assigneeTasks = [...tasks.urgent, ...tasks.thisWeek].filter(
+    t => t.assignee === args.assignee
+  );
+
+  const message = args.message ||
+    `📋 ${args.assignee}さん、タスクのリマインドです！\n` +
+    assigneeTasks.map(t => `• ${t.task}（期限: ${t.deadline}）`).join('\n');
+
+  const sent = await sendSlackDM(slackId, message);
+
+  return {
+    success: sent,
+    message: sent
+      ? `${args.assignee}さんにリマインダーを送信しました`
+      : `リマインダーの送信に失敗しました`
+  };
+}
+
+// ツール実行のディスパッチャー
+async function executeTool(name, args) {
+  console.log(`[Agent] Executing tool: ${name}`, args);
+
+  switch (name) {
+    case 'addTask':
+      return executeAddTask(args);
+    case 'completeTask':
+      return executeCompleteTask(args);
+    case 'deleteTask':
+      return executeDeleteTask(args);
+    case 'listTasks':
+      return executeListTasks(args);
+    case 'searchTasks':
+      return executeSearchTasks(args);
+    case 'updateTaskStatus':
+      return executeUpdateTaskStatus(args);
+    case 'sendReminder':
+      return await executeSendReminder(args);
+    default:
+      return { success: false, message: `Unknown tool: ${name}` };
   }
 }
 
-// アクションを検出して実行
-function processAction(response) {
-  const actionMatch = response.match(/```ACTION\s*([\s\S]*?)```/);
-  if (!actionMatch) return { response, actionResult: null };
+// ==========================================
+// エージェントループ
+// ==========================================
+async function runAgent(userMessage, userId, userName) {
+  console.log(`[Agent] Starting for user: ${userName}, message: ${userMessage}`);
 
-  try {
-    const actionData = JSON.parse(actionMatch[1].trim());
-    let actionResult = '';
+  // ユーザーの過去の会話履歴を取得
+  const recentHistory = getUserRecentHistory(userId, 5);
+  const historyContext = recentHistory.length > 0
+    ? `【${userName}さんとの最近の会話】\n${recentHistory.map(h => `${h.role === 'user' ? userName : 'オーくん'}: ${h.content.substring(0, 100)}...`).join('\n')}\n`
+    : '';
 
-    switch (actionData.action) {
-      case 'ADD':
-        const newTask = {
-          id: getNextId(tasks),
-          task: actionData.task,
-          assignee: actionData.assignee || '-',
-          project: actionData.project || '未分類',
-          deadline: actionData.deadline || '未定',
-          status: '未着手'
-        };
-        if (actionData.priority === 'urgent') {
-          tasks.urgent.push(newTask);
-        } else {
-          tasks.thisWeek.push(newTask);
-        }
-        saveTasks(tasks);
-        actionResult = `✅ タスク「${newTask.task}」を追加しました (ID: ${newTask.id})`;
-        break;
+  // 現在のタスク状況をコンテキストとして追加
+  const taskContext = `
+【現在のタスク状況】
+緊急タスク: ${tasks.urgent.length}件
+${tasks.urgent.map(t => `  [${t.id}] ${t.task} (担当:${t.assignee}, 期限:${t.deadline})`).join('\n')}
 
-      case 'DONE':
-        let foundTask = null;
-        for (const list of ['urgent', 'thisWeek']) {
-          const idx = tasks[list].findIndex(t => t.id === actionData.taskId);
-          if (idx !== -1) {
-            foundTask = tasks[list].splice(idx, 1)[0];
-            foundTask.status = '完了';
-            foundTask.completedAt = new Date().toISOString();
-            tasks.completed.push(foundTask);
-            break;
-          }
-        }
-        if (foundTask) {
-          saveTasks(tasks);
-          actionResult = `🎉 タスク「${foundTask.task}」を完了にしました！`;
-        } else {
-          actionResult = `⚠️ タスクID ${actionData.taskId} が見つかりませんでした`;
-        }
-        break;
+今週のタスク: ${tasks.thisWeek.length}件
+${tasks.thisWeek.map(t => `  [${t.id}] ${t.task} (担当:${t.assignee}, 期限:${t.deadline})`).join('\n')}
+`;
 
-      case 'DELETE':
-        let deletedTask = null;
-        for (const list of ['urgent', 'thisWeek', 'completed']) {
-          const idx = tasks[list].findIndex(t => t.id === actionData.taskId);
-          if (idx !== -1) {
-            deletedTask = tasks[list].splice(idx, 1)[0];
-            break;
-          }
-        }
-        if (deletedTask) {
-          saveTasks(tasks);
-          actionResult = `🗑️ タスク「${deletedTask.task}」を削除しました`;
-        } else {
-          actionResult = `⚠️ タスクID ${actionData.taskId} が見つかりませんでした`;
-        }
-        break;
+  // チャット履歴を構築
+  const chat = model.startChat({
+    history: [],
+  });
+
+  // ユーザーメッセージを送信（過去の会話履歴も含める）
+  const fullMessage = `${historyContext}${taskContext}\n\nユーザー(${userName})からのメッセージ: ${userMessage}`;
+
+  let response = await chat.sendMessage(fullMessage);
+  let result = response.response;
+
+  // エージェントループ: ツール呼び出しがある限り続ける
+  let loopCount = 0;
+  const maxLoops = 10; // 無限ループ防止
+
+  while (loopCount < maxLoops) {
+    loopCount++;
+
+    // Function Callがあるかチェック
+    const functionCalls = result.candidates?.[0]?.content?.parts?.filter(
+      part => part.functionCall
+    );
+
+    if (!functionCalls || functionCalls.length === 0) {
+      // ツール呼び出しなし = 最終回答
+      break;
     }
 
-    const cleanResponse = response.replace(/```ACTION[\s\S]*?```/g, '').trim();
-    return { response: cleanResponse, actionResult };
+    console.log(`[Agent] Loop ${loopCount}: ${functionCalls.length} function call(s)`);
 
-  } catch (e) {
-    console.error('Action parse error:', e);
-    return { response, actionResult: null };
+    // 各ツールを実行
+    const toolResults = [];
+    for (const part of functionCalls) {
+      const { name, args } = part.functionCall;
+      const toolResult = await executeTool(name, args);
+      toolResults.push({
+        functionResponse: {
+          name: name,
+          response: toolResult
+        }
+      });
+    }
+
+    // ツール結果をGeminiに送信
+    response = await chat.sendMessage(toolResults);
+    result = response.response;
+  }
+
+  // 最終的なテキスト回答を取得
+  const textParts = result.candidates?.[0]?.content?.parts?.filter(
+    part => part.text
+  );
+
+  const finalText = textParts?.map(p => p.text).join('\n') || 'すみません、うまく処理できませんでした。';
+
+  console.log(`[Agent] Completed. Loops: ${loopCount}`);
+  return finalText;
+}
+
+// ==========================================
+// スレッド会話用エージェント
+// ==========================================
+async function runAgentForThread(userMessage, userName, conversationHistory) {
+  console.log(`[ThreadAgent] Starting conversation for ${userName}`);
+
+  // 会話専用モデル（ツールなし、より自然な会話向け）
+  const chatModel = genAI.getGenerativeModel({
+    model: 'gemini-2.5-flash',
+    systemInstruction: `あなたは「オーくん」、Uravation株式会社のフレンドリーなAIアシスタントです。
+
+【性格・話し方】
+- 明るくてフレンドリー、でも仕事もしっかりできる
+- 敬語は使わず、タメ口でカジュアルに話す
+- 「〜だよ」「〜だね」「〜かな？」などの口調
+- 適度に絵文字を使う
+- 共感力が高く、相手の気持ちに寄り添う
+
+【できること】
+- タスク管理の相談やアドバイス
+- 雑談や相談相手
+- アイデア出しのサポート
+- 励ましや応援
+
+【大切にしていること】
+- ユーザーの話をちゃんと聞く
+- 押し付けがましくならない
+- 具体的で実用的なアドバイス
+- ポジティブな雰囲気を大切に
+
+質問されたら答えて、雑談なら楽しく話して、相談なら一緒に考えてあげてね。`
+  });
+
+  const chat = chatModel.startChat({
+    history: [],
+  });
+
+  // 会話コンテキストを構築
+  const contextMessage = `【これまでの会話】
+${conversationHistory}
+
+【${userName}さんの最新メッセージ】
+${userMessage}
+
+上記の会話の流れを踏まえて、自然に返答してください。`;
+
+  try {
+    const response = await chat.sendMessage(contextMessage);
+    const result = response.response;
+
+    const textParts = result.candidates?.[0]?.content?.parts?.filter(
+      part => part.text
+    );
+
+    const finalText = textParts?.map(p => p.text).join('\n') || 'ごめん、ちょっとうまく返せなかった...もう一回言ってもらえる？';
+
+    console.log(`[ThreadAgent] Response generated for ${userName}`);
+    return finalText;
+  } catch (error) {
+    console.error('[ThreadAgent] Error:', error);
+    return 'あれ、なんかエラーになっちゃった...ごめんね 🙏';
   }
 }
 
-// Slack DMを送信
+// ==========================================
+// Slack関連
+// ==========================================
+
 async function sendSlackDM(userId, message) {
   try {
-    // DMチャンネルを開く
     const openRes = await fetch('https://slack.com/api/conversations.open', {
       method: 'POST',
       headers: {
@@ -279,7 +780,6 @@ async function sendSlackDM(userId, message) {
       return false;
     }
 
-    // メッセージを送信
     const msgRes = await fetch('https://slack.com/api/chat.postMessage', {
       method: 'POST',
       headers: {
@@ -306,103 +806,6 @@ async function sendSlackDM(userId, message) {
   }
 }
 
-// Geminiでリマインドメッセージを生成
-async function generateReminderMessage(assignee, taskList) {
-  const prompt = `あなたはUravationのタスク管理AIアシスタントです。
-${assignee}さんに期限が近いタスクのリマインドDMを送ります。
-
-期限が近いタスク:
-${taskList.map(t => `- ${t.task}（期限: ${t.deadline}）`).join('\n')}
-
-フレンドリーで励ましになるような、でもプレッシャーをかけすぎない自然なリマインドメッセージを作成してください。
-固定文章ではなく、タスクの内容に合わせて少しバリエーションをつけて。
-絵文字も適度に使ってください。150文字以内で。`;
-
-  try {
-    return await callGemini(prompt);
-  } catch (e) {
-    // フォールバック
-    return `📋 ${assignee}さん、お疲れさまです！\n期限が近いタスクがあります:\n${taskList.map(t => `• ${t.task}（${t.deadline}）`).join('\n')}\nファイトです！💪`;
-  }
-}
-
-// 期限チェックとリマインド送信
-async function checkDeadlinesAndRemind() {
-  console.log('Checking deadlines...');
-
-  const now = new Date();
-  const allTasks = [...tasks.urgent, ...tasks.thisWeek];
-
-  // 担当者ごとにタスクをグループ化
-  const tasksByAssignee = {};
-
-  for (const task of allTasks) {
-    if (task.status === '完了' || task.assignee === '-') continue;
-
-    // 期限をパース（例: "12/9", "12/8 21:00"）
-    const deadlineStr = task.deadline;
-    const match = deadlineStr.match(/(\d+)\/(\d+)/);
-    if (!match) continue;
-
-    const month = parseInt(match[1]);
-    const day = parseInt(match[2]);
-    const deadlineDate = new Date(now.getFullYear(), month - 1, day);
-
-    // 期限までの日数を計算
-    const daysUntil = Math.ceil((deadlineDate - now) / (1000 * 60 * 60 * 24));
-
-    // 2日以内のタスクをリマインド対象に
-    if (daysUntil <= 2 && daysUntil >= 0) {
-      if (!tasksByAssignee[task.assignee]) {
-        tasksByAssignee[task.assignee] = [];
-      }
-      tasksByAssignee[task.assignee].push(task);
-    }
-  }
-
-  // 送信したリマインドを記録（CEO報告用）
-  const sentReminders = [];
-
-  // 各担当者にリマインドDMを送信
-  for (const [assignee, taskList] of Object.entries(tasksByAssignee)) {
-    const slackId = MEMBER_SLACK_IDS[assignee];
-    if (!slackId) {
-      console.log(`No Slack ID for: ${assignee}`);
-      continue;
-    }
-
-    // 自分自身（CEO）へのリマインドは報告不要
-    if (slackId === CEO_SLACK_ID) {
-      const message = generateReminderMessage(assignee, taskList);
-      await sendSlackDM(slackId, message);
-    } else {
-      const message = generateReminderMessage(assignee, taskList);
-      const sent = await sendSlackDM(slackId, message);
-      if (sent) {
-        sentReminders.push({
-          assignee,
-          tasks: taskList.map(t => t.task)
-        });
-      }
-    }
-
-    // Rate limit対策
-    await new Promise(r => setTimeout(r, 1000));
-  }
-
-  // CEOに送信報告
-  if (sentReminders.length > 0) {
-    const reportLines = sentReminders.map(r =>
-      `• ${r.assignee}さん: ${r.tasks.join(', ')}`
-    );
-    const ceoReport = `📬 リマインド送信報告\n\n以下のメンバーにリマインドDMを送信しました:\n${reportLines.join('\n')}`;
-    await sendSlackDM(CEO_SLACK_ID, ceoReport);
-  }
-
-  console.log('Reminder check completed');
-}
-
-// 非同期でSlackに返信
 async function sendDelayedResponse(response_url, text) {
   try {
     const response = await fetch(response_url, {
@@ -419,33 +822,127 @@ async function sendDelayedResponse(response_url, text) {
   }
 }
 
+// 期限チェックとリマインド送信
+async function checkDeadlinesAndRemind() {
+  console.log('Checking deadlines...');
+
+  const now = new Date();
+  const allTasks = [...tasks.urgent, ...tasks.thisWeek];
+  const tasksByAssignee = {};
+
+  for (const task of allTasks) {
+    if (task.status === '完了' || task.assignee === '-') continue;
+
+    const deadlineStr = task.deadline;
+    const match = deadlineStr.match(/(\d+)\/(\d+)/);
+    if (!match) continue;
+
+    const month = parseInt(match[1]);
+    const day = parseInt(match[2]);
+    const deadlineDate = new Date(now.getFullYear(), month - 1, day);
+    const daysUntil = Math.ceil((deadlineDate - now) / (1000 * 60 * 60 * 24));
+
+    if (daysUntil <= 2 && daysUntil >= 0) {
+      if (!tasksByAssignee[task.assignee]) {
+        tasksByAssignee[task.assignee] = [];
+      }
+      tasksByAssignee[task.assignee].push(task);
+    }
+  }
+
+  const sentReminders = [];
+
+  for (const [assignee, taskList] of Object.entries(tasksByAssignee)) {
+    const slackId = MEMBER_SLACK_IDS[assignee];
+    if (!slackId) continue;
+
+    const message = `📋 ${assignee}さん、お疲れさまです！\n期限が近いタスクがあります:\n${taskList.map(t => `• ${t.task}（${t.deadline}）`).join('\n')}\nファイトです！💪`;
+    const sent = await sendSlackDM(slackId, message);
+
+    if (sent && slackId !== CEO_SLACK_ID) {
+      sentReminders.push({
+        assignee,
+        tasks: taskList.map(t => t.task)
+      });
+    }
+
+    await new Promise(r => setTimeout(r, 1000));
+  }
+
+  if (sentReminders.length > 0) {
+    const reportLines = sentReminders.map(r =>
+      `• ${r.assignee}さん: ${r.tasks.join(', ')}`
+    );
+    const ceoReport = `📬 リマインド送信報告\n\n以下のメンバーにリマインドDMを送信しました:\n${reportLines.join('\n')}`;
+    await sendSlackDM(CEO_SLACK_ID, ceoReport);
+  }
+
+  console.log('Reminder check completed');
+}
+
+// ==========================================
+// APIエンドポイント
+// ==========================================
+
 // Slack Slash Command ハンドラー
 app.post('/slack/command', async (req, res) => {
-  const { text, user_name, command, response_url } = req.body;
-  console.log(`Command: ${command}, Text: ${text}, User: ${user_name}`);
+  const { text, user_name, user_id, command, response_url, channel_id } = req.body;
+  console.log(`Command: ${command}, Text: ${text}, User: ${user_name}, Channel: ${channel_id}`);
 
+  // スレッドリンクからthread_tsを抽出する関数
+  function extractThreadTs(inputText) {
+    // Slack permalink format: https://xxx.slack.com/archives/CHANNEL/p1234567890123456
+    // または /p1234567890123456 の部分
+    const permalinkMatch = inputText.match(/\/p(\d{10})(\d{6})?/);
+    if (permalinkMatch) {
+      const ts = permalinkMatch[1] + '.' + (permalinkMatch[2] || '000000');
+      return ts;
+    }
+    return null;
+  }
+
+  // スレッドリンクをテキストから抽出
+  const slackLinkMatch = text?.match(/<(https:\/\/[^|>]+\.slack\.com\/archives\/[^|>]+)(\|[^>]*)?>/) ||
+                         text?.match(/(https:\/\/[^\s]+\.slack\.com\/archives\/[^\s]+)/);
+  let threadTs = null;
+  let cleanText = text || '';
+
+  if (slackLinkMatch) {
+    const slackUrl = slackLinkMatch[1];
+    threadTs = extractThreadTs(slackUrl);
+    // URLをテキストから除去
+    cleanText = text.replace(slackLinkMatch[0], '').trim();
+    console.log(`[Slash] Detected thread link, thread_ts: ${threadTs}`);
+  }
+
+  // 即座に処理中メッセージを返す
   res.json({
-    response_type: "in_channel",
-    text: `⏳ 処理中... ${user_name}さん: ${text || 'today'}`
+    response_type: "ephemeral", // 本人にだけ見える処理中メッセージ
+    text: `⏳ 処理中...`
   });
 
   try {
-    const prompt = `${getSystemPrompt()}
+    const agentResponse = await runAgent(cleanText || 'タスク一覧を見せて', user_id, user_name);
 
-ユーザー(${user_name})からのリクエスト: ${text || 'today'}
-
-Slack形式で回答してください。タスク操作の依頼があればACTIONブロックも出力してください。`;
-
-    const geminiResponse = await callGemini(prompt);
-    const { response: cleanResponse, actionResult } = processAction(geminiResponse);
-
-    let finalResponse = cleanResponse;
-    if (actionResult) {
-      finalResponse += `\n\n---\n${actionResult}`;
-    }
-
-    if (response_url) {
-      await sendDelayedResponse(response_url, finalResponse);
+    // スレッドtsがある場合はスレッドに返信、なければチャンネルに投稿
+    if (threadTs && channel_id) {
+      // スレッドに返信
+      await fetch('https://slack.com/api/chat.postMessage', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          channel: channel_id,
+          thread_ts: threadTs,
+          text: agentResponse
+        })
+      });
+      console.log(`[Slash] Responded in thread ${threadTs}`);
+    } else if (response_url) {
+      // 通常のレスポンス
+      await sendDelayedResponse(response_url, agentResponse);
     }
   } catch (error) {
     console.error('Error processing:', error);
@@ -455,11 +952,97 @@ Slack形式で回答してください。タスク操作の依頼があればACT
   }
 });
 
-// Slack Events API ハンドラー（DMでの会話用）
+// タスク検出用のAI分析関数
+async function analyzeForTask(message, userName) {
+  const analysisModel = genAI.getGenerativeModel({
+    model: 'gemini-2.5-flash',
+  });
+
+  const prompt = `以下のSlackメッセージを分析して、「実際の作業タスク」として登録すべきかどうか判断してください。
+
+メッセージ: "${message}"
+発言者: ${userName}
+
+【タスクとして検出する条件】すべて満たす必要あり：
+1. 具体的な「成果物」や「アウトプット」を伴う作業依頼である
+2. 期限が明示または暗示されている（「今週中」「明日まで」「来週月曜」など）
+3. 「資料作成」「開発」「設計」「準備」「連絡」など実作業を伴う
+
+【タスクではないもの】以下は絶対にタスクとして検出しない：
+- 質問や情報の問い合わせ（「〜教えて」「〜見せて」「〜ある？」「〜って何？」）
+- AIやボットへの指示・命令（「タスク一覧」「確認して」など）
+- 単なる雑談や感想
+- 報告・共有のみ（作業依頼なし）
+- すでに完了した報告
+- 挨拶やリアクション
+
+【重要】
+- 「教えて」「見せて」「確認して」は情報要求であり、タスクではない
+- 「作りたい」「やりたい」だけでは弱い。期限や成果物が明確な場合のみタスク
+- 迷ったらタスクではないと判断する（false positive を避ける）
+
+JSON形式で回答してください：
+{
+  "isTask": true/false,
+  "confidence": 0-100,
+  "task": "タスク内容（isTaskがtrueの場合）",
+  "assignee": "担当者名（わかる場合、なければnull）",
+  "deadline": "期限（わかる場合、なければnull）",
+  "reason": "判断理由"
+}`;
+
+  try {
+    const result = await analysisModel.generateContent(prompt);
+    const responseText = result.response.text();
+
+    // JSONを抽出
+    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      return JSON.parse(jsonMatch[0]);
+    }
+    return { isTask: false, confidence: 0, reason: 'パース失敗' };
+  } catch (error) {
+    console.error('Task analysis error:', error);
+    return { isTask: false, confidence: 0, reason: error.message };
+  }
+}
+
+// スレッドに返信する関数
+async function replyInThread(channel, threadTs, message) {
+  console.log(`[replyInThread] Sending to channel: ${channel}, thread: ${threadTs}, message length: ${message?.length || 0}`);
+  try {
+    const response = await fetch('https://slack.com/api/chat.postMessage', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        channel: channel,
+        thread_ts: threadTs,
+        text: message
+      })
+    });
+    const result = await response.json();
+    console.log(`[replyInThread] Result:`, result.ok ? 'success' : result.error);
+    if (!result.ok) {
+      console.error('[replyInThread] Full error:', JSON.stringify(result));
+    }
+    return result.ok;
+  } catch (error) {
+    console.error('Thread reply error:', error);
+    return false;
+  }
+}
+
+// 処理済みメッセージを追跡（重複防止）
+const processedMessages = new Set();
+
+// Slack Events API ハンドラー（DM + チャンネル監視）
 app.post('/slack/events', async (req, res) => {
   const { type, challenge, event } = req.body;
 
-  // URL検証（Slack Event Subscriptions設定時）
+  // URL検証
   if (type === 'url_verification') {
     return res.json({ challenge });
   }
@@ -469,6 +1052,135 @@ app.post('/slack/events', async (req, res) => {
     // ボット自身のメッセージは無視
     if (event.bot_id || event.subtype === 'bot_message') {
       return res.status(200).send('ok');
+    }
+
+    // 重複イベント防止
+    const eventId = event.client_msg_id || event.ts;
+    if (processedMessages.has(eventId)) {
+      return res.status(200).send('ok');
+    }
+    processedMessages.add(eventId);
+    // 古いエントリを削除（メモリリーク防止）
+    if (processedMessages.size > 1000) {
+      const entries = Array.from(processedMessages);
+      entries.slice(0, 500).forEach(e => processedMessages.delete(e));
+    }
+
+    // app_mention イベント（ボットが@メンションされた時）
+    if (event.type === 'app_mention') {
+      const userMessage = event.text;
+      const userId = event.user;
+      const channel = event.channel;
+      const messageTs = event.ts;
+      const threadTs = event.thread_ts; // スレッド内でメンションされた場合
+
+      console.log(`[app_mention] User ${userId} mentioned bot: ${userMessage?.substring(0, 50)}...`);
+      console.log(`[app_mention] Channel: ${channel}, ts: ${messageTs}, thread_ts: ${threadTs}`);
+
+      // 即座に200を返す
+      res.status(200).send('ok');
+
+      try {
+        // ユーザー名を取得
+        const userInfoRes = await fetch(`https://slack.com/api/users.info?user=${userId}`, {
+          headers: { 'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}` }
+        });
+        const userInfo = await userInfoRes.json();
+        const userName = userInfo.ok ? (userInfo.user.real_name || userInfo.user.name) : 'ユーザー';
+
+        // メンション部分を除去してクリーンなメッセージを取得
+        const cleanMessage = userMessage.replace(/<@[A-Z0-9]+>/g, '').trim() || 'やあ！';
+
+        console.log(`[app_mention] Processing message from ${userName}: ${cleanMessage}`);
+
+        // スレッド内の場合、過去のメッセージを取得してコンテキストを構築
+        let contextMessage = cleanMessage;
+        if (threadTs) {
+          try {
+            const repliesRes = await fetch(
+              `https://slack.com/api/conversations.replies?channel=${channel}&ts=${threadTs}&limit=20`,
+              { headers: { 'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}` } }
+            );
+            const repliesData = await repliesRes.json();
+
+            if (repliesData.ok && repliesData.messages && repliesData.messages.length > 1) {
+              // ユーザー名のキャッシュを作成
+              const userNameCache = {};
+
+              // 過去のメッセージを整形（自分のメッセージ以外、最新20件まで）
+              const threadHistory = [];
+              for (const msg of repliesData.messages) {
+                // 現在のメンションメッセージはスキップ（最後に追加する）
+                if (msg.ts === messageTs) continue;
+
+                // ユーザー名を取得（キャッシュ使用）
+                let msgUserName = 'ユーザー';
+                if (msg.user) {
+                  if (userNameCache[msg.user]) {
+                    msgUserName = userNameCache[msg.user];
+                  } else {
+                    try {
+                      const msgUserRes = await fetch(`https://slack.com/api/users.info?user=${msg.user}`, {
+                        headers: { 'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}` }
+                      });
+                      const msgUserInfo = await msgUserRes.json();
+                      if (msgUserInfo.ok) {
+                        msgUserName = msgUserInfo.user.real_name || msgUserInfo.user.name;
+                        userNameCache[msg.user] = msgUserName;
+                      }
+                    } catch (e) {
+                      console.log(`[app_mention] Failed to get user name for ${msg.user}`);
+                    }
+                  }
+                } else if (msg.bot_id) {
+                  msgUserName = 'オーくん';
+                }
+
+                // メンション部分を除去
+                const cleanMsgText = (msg.text || '').replace(/<@[A-Z0-9]+>/g, '').trim();
+                if (cleanMsgText) {
+                  threadHistory.push(`${msgUserName}: ${cleanMsgText}`);
+                }
+              }
+
+              if (threadHistory.length > 0) {
+                console.log(`[app_mention] Found ${threadHistory.length} previous messages in thread`);
+                contextMessage = `【スレッドの会話履歴】\n${threadHistory.join('\n')}\n\n【今の質問・依頼】\n${userName}: ${cleanMessage}`;
+              }
+            }
+          } catch (threadError) {
+            console.error('[app_mention] Error fetching thread history:', threadError);
+            // エラーでもメイン処理は続行
+          }
+        }
+
+        // 会話履歴に追加
+        addToUserHistory(userId, userName, 'user', cleanMessage, {
+          type: 'mention',
+          channel,
+          threadTs: threadTs || messageTs
+        });
+
+        // エージェントで応答を生成（スレッドコンテキスト付き）
+        const agentResponse = await runAgent(contextMessage, userId, userName);
+
+        // 会話履歴に追加（アシスタント応答）
+        addToUserHistory(userId, userName, 'assistant', agentResponse, {
+          type: 'mention',
+          channel,
+          threadTs: threadTs || messageTs
+        });
+
+        // スレッドに返信（thread_tsがあればそのスレッド、なければ新しいスレッドを作成）
+        await replyInThread(channel, threadTs || messageTs, agentResponse);
+        console.log(`[app_mention] Response sent to thread ${threadTs || messageTs}`);
+
+      } catch (error) {
+        console.error('[app_mention] Error:', error);
+        await replyInThread(channel, threadTs || messageTs, `❌ ごめん、エラーが発生しちゃった: ${error.message}`);
+      }
+
+      return;
     }
 
     // DMでのメッセージイベント
@@ -489,39 +1201,133 @@ app.post('/slack/events', async (req, res) => {
         const userInfo = await userInfoRes.json();
         const userName = userInfo.ok ? (userInfo.user.real_name || userInfo.user.name) : 'ユーザー';
 
-        // 会話履歴に追加（ユーザーのメッセージ）
-        addToHistory(userId, 'user', userMessage);
+        // 会話履歴に追加（ユーザーメッセージ）
+        addToUserHistory(userId, userName, 'user', userMessage, { type: 'dm' });
 
-        // 会話履歴を取得してプロンプトに含める
-        const historyContext = formatConversationHistory(userId);
+        // エージェントを実行
+        const agentResponse = await runAgent(userMessage, userId, userName);
 
-        // Geminiで回答を生成（非同期版を使用 - 同時リクエスト対応）
-        const prompt = `${getSystemPrompt()}
-${historyContext}
-
-ユーザー(${userName})からの最新メッセージ: ${userMessage}
-
-Slack DMでの会話なので、フレンドリーに回答してください。
-会話履歴がある場合は、前の会話を踏まえて回答してください。
-タスク操作の依頼があればACTIONブロックも出力してください。`;
-
-        const geminiResponse = await callGemini(prompt);
-        const { response: cleanResponse, actionResult } = processAction(geminiResponse);
-
-        let finalResponse = cleanResponse;
-        if (actionResult) {
-          finalResponse += `\n\n---\n${actionResult}`;
-        }
-
-        // 会話履歴に追加（アシスタントの応答）
-        addToHistory(userId, 'assistant', finalResponse);
+        // 会話履歴に追加（アシスタント応答）
+        addToUserHistory(userId, userName, 'assistant', agentResponse, { type: 'dm' });
 
         // DMに返信
-        await sendSlackDM(userId, finalResponse);
+        await sendSlackDM(userId, agentResponse);
 
       } catch (error) {
         console.error('DM processing error:', error);
         await sendSlackDM(userId, `❌ エラーが発生しました: ${error.message}`);
+      }
+
+      return;
+    }
+
+    // チャンネルでのメッセージイベント（タスク検出 + スレッド会話）
+    if (event.type === 'message' && event.channel_type === 'channel') {
+      const userMessage = event.text;
+      const userId = event.user;
+      const channel = event.channel;
+      const messageTs = event.ts;
+      const threadTs = event.thread_ts; // スレッド返信の場合は親メッセージのts
+
+      // 短すぎるメッセージは無視
+      if (!userMessage || userMessage.length < 5) {
+        return res.status(200).send('ok');
+      }
+
+      // 即座に200を返す
+      res.status(200).send('ok');
+
+      try {
+        // ユーザー名を取得
+        const userInfoRes = await fetch(`https://slack.com/api/users.info?user=${userId}`, {
+          headers: { 'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}` }
+        });
+        const userInfo = await userInfoRes.json();
+        const userName = userInfo.ok ? (userInfo.user.real_name || userInfo.user.name) : 'ユーザー';
+
+        // スレッド返信の場合 → 条件付きでエージェントで会話
+        if (threadTs) {
+          console.log(`Thread reply from ${userName}: ${userMessage.substring(0, 50)}...`);
+
+          // スレッドの履歴を取得
+          const historyRes = await fetch(`https://slack.com/api/conversations.replies?channel=${channel}&ts=${threadTs}&limit=20`, {
+            headers: { 'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}` }
+          });
+          const historyData = await historyRes.json();
+
+          // ボットがすでにスレッドに参加しているかチェック
+          let botAlreadyInThread = false;
+          let conversationHistory = '';
+          if (historyData.ok && historyData.messages) {
+            for (const msg of historyData.messages) {
+              if (msg.bot_id) {
+                botAlreadyInThread = true;
+              }
+            }
+            // 会話履歴をフォーマット
+            for (const msg of historyData.messages.slice(-10)) {
+              const isBot = msg.bot_id ? true : false;
+              const sender = isBot ? 'オーくん' : userName;
+              conversationHistory += `${sender}: ${msg.text}\n`;
+            }
+          }
+
+          // @メンションされているかチェック（「オーくん」または bot user ID）
+          const isMentioned = userMessage.includes('オーくん') ||
+                              userMessage.includes('@オーくん') ||
+                              /<@U[A-Z0-9]+>/.test(userMessage); // Slackのメンション形式
+
+          // ボットが参加済み OR メンションされた場合のみ応答
+          if (!botAlreadyInThread && !isMentioned) {
+            console.log(`[Thread] Skipping - bot not in thread and not mentioned`);
+            return;
+          }
+
+          console.log(`[Thread] Responding - botInThread: ${botAlreadyInThread}, mentioned: ${isMentioned}`);
+
+          // 会話履歴に追加（ユーザーメッセージ）
+          addToUserHistory(userId, userName, 'user', userMessage, { type: 'thread', channel, threadTs });
+
+          // エージェントで返答生成（ツール機能付き）
+          const agentResponse = await runAgent(userMessage, userId, userName);
+
+          // 会話履歴に追加（アシスタント応答）
+          addToUserHistory(userId, userName, 'assistant', agentResponse, { type: 'thread', channel, threadTs });
+
+          await replyInThread(channel, threadTs, agentResponse);
+          return;
+        }
+
+        // 新規メッセージの場合 → タスク検出
+        console.log(`Channel message from ${userName}: ${userMessage.substring(0, 50)}...`);
+
+        // AIでタスク分析
+        const analysis = await analyzeForTask(userMessage, userName);
+        console.log('Task analysis:', analysis);
+
+        // 高い確信度でタスクと判断された場合
+        if (analysis.isTask && analysis.confidence >= 85) {
+          const taskInfo = analysis.task || userMessage.substring(0, 50);
+          const assigneeInfo = analysis.assignee ? `担当: ${analysis.assignee}` : '';
+          const deadlineInfo = analysis.deadline ? `期限: ${analysis.deadline}` : '';
+
+          const replyMessage = `🤖 オーくんです！このメッセージはタスクっぽいですね。
+
+📋 **検出したタスク**: ${taskInfo}
+${assigneeInfo ? `👤 ${assigneeInfo}` : ''}
+${deadlineInfo ? `⏰ ${deadlineInfo}` : ''}
+
+タスクとして登録しますか？
+• 「登録して」と返信 → タスクに追加
+• 「いらない」と返信 → スキップ
+
+（確信度: ${analysis.confidence}%）`;
+
+          await replyInThread(channel, messageTs, replyMessage);
+        }
+
+      } catch (error) {
+        console.error('Channel message processing error:', error);
       }
 
       return;
@@ -531,7 +1337,7 @@ Slack DMでの会話なので、フレンドリーに回答してください。
   res.status(200).send('ok');
 });
 
-// 手動リマインドトリガー（テスト用）
+// 手動リマインドトリガー
 app.post('/trigger-reminder', async (req, res) => {
   res.json({ status: 'Reminder check started' });
   await checkDeadlinesAndRemind();
@@ -542,7 +1348,7 @@ app.get('/tasks', (req, res) => {
   res.json(tasks);
 });
 
-// メンバーマッピング更新API
+// メンバーマッピングAPI
 app.post('/members', (req, res) => {
   const { name, slackId } = req.body;
   if (name && slackId) {
@@ -558,19 +1364,20 @@ app.get('/members', (req, res) => {
 });
 
 app.get('/', (req, res) => {
-  res.send('Slack Task Bot with AI Reminders!');
+  res.send('🤖 オーくん - Slack Task Agent with Gemini Function Calling!');
 });
 
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
+    agent: true,
     timestamp: new Date().toISOString(),
     taskCount: tasks.urgent.length + tasks.thisWeek.length,
     reminderEnabled: true
   });
 });
 
-// 定期リマインド: 毎日9:00と18:00にチェック
+// 定期リマインド: 毎日9:00と18:00
 cron.schedule('0 9,18 * * *', () => {
   console.log('Scheduled reminder check...');
   checkDeadlinesAndRemind();
@@ -580,7 +1387,8 @@ cron.schedule('0 9,18 * * *', () => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`Tasks: ${tasks.urgent.length} urgent, ${tasks.thisWeek.length} this week`);
-  console.log('Reminder schedule: 9:00 & 18:00 JST');
+  console.log(`🤖 オーくん Agent running on port ${PORT}`);
+  console.log(`📋 Tasks: ${tasks.urgent.length} urgent, ${tasks.thisWeek.length} this week`);
+  console.log(`⏰ Reminder schedule: 9:00 & 18:00 JST`);
+  console.log(`🔧 Tools: addTask, completeTask, deleteTask, listTasks, searchTasks, updateTaskStatus, sendReminder`);
 });

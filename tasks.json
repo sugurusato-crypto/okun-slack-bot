@@ -2,84 +2,84 @@
   "urgent": [
     {
       "id": 1,
-      "task": "新コミュニティ名の正式決定",
-      "assignee": "-",
-      "project": "P11_コミュニティ",
-      "deadline": "12/9",
+      "task": "12/15(月) AI顧問ローンチ（顧問営業資料作成を含む）",
+      "assignee": "傑",
+      "project": "AI顧問",
+      "deadline": "12/15",
       "status": "未着手"
     },
     {
       "id": 2,
-      "task": "コンセプト・社会課題の言語化",
-      "assignee": "-",
-      "project": "P11_コミュニティ",
-      "deadline": "12/9",
+      "task": "11/30(日)フランチャイズローンチ：研修修正、Xポスト作成、PRtimes修正",
+      "assignee": "傑",
+      "project": "フランチャイズ",
+      "deadline": "12/8",
+      "status": "未着手"
+    },
+    {
+      "id": 3,
+      "task": "顧問ローンチ：営業資料作成 傑Xポスト PRtimes",
+      "assignee": "傑",
+      "project": "AI顧問",
+      "deadline": "12/15",
       "status": "未着手"
     }
   ],
   "thisWeek": [
     {
-      "id": 3,
-      "task": "Xアカウントのコンセプト会議",
-      "assignee": "佐藤",
-      "project": "SNS運用",
-      "deadline": "12/8 21:00",
-      "status": "未着手"
-    },
-    {
       "id": 4,
-      "task": "水曜日 開発ミーティング",
-      "assignee": "-",
-      "project": "開発",
-      "deadline": "12/10",
+      "task": "リセール事業の資料改善",
+      "assignee": "傑",
+      "project": "リセール",
+      "deadline": "12/14",
       "status": "未着手"
     },
     {
       "id": 5,
-      "task": "移行方針・料金プランの確定",
-      "assignee": "-",
-      "project": "P11_コミュニティ",
-      "deadline": "12/12",
+      "task": "海外ToBホットリードアプローチ 4社成約目標 座組み決める→アプローチ",
+      "assignee": "傑",
+      "project": "海外ToB",
+      "deadline": "12/14",
       "status": "未着手"
     },
     {
       "id": 6,
-      "task": "新Discord構成案 FIX",
-      "assignee": "シュン",
-      "project": "P11_コミュニティ",
-      "deadline": "12/12",
+      "task": "執筆マーケティング準備",
+      "assignee": "河原",
+      "project": "執筆",
+      "deadline": "1/1",
       "status": "未着手"
     },
     {
       "id": 7,
-      "task": "動画DB設計・要件定義",
-      "assignee": "太陽",
-      "project": "P11_コミュニティ",
-      "deadline": "12/14",
+      "task": "売上、請求書契約書周りのフォルダと統一",
+      "assignee": "傑",
+      "project": "経理",
+      "deadline": "-",
       "status": "未着手"
     },
     {
       "id": 8,
-      "task": "アプリMVP実装完了",
-      "assignee": "太陽",
-      "project": "P11_コミュニティ",
-      "deadline": "12/14",
+      "task": "余裕あったら社労士別で探す",
+      "assignee": "傑",
+      "project": "バックオフィス",
+      "deadline": "-",
       "status": "未着手"
     },
     {
       "id": 9,
-      "task": "1月〜3月のコンテンツ設計",
+      "task": "会社公式HPにロゴ載せたい",
       "assignee": "傑",
-      "project": "P11_コミュニティ",
-      "deadline": "12/14",
+      "project": "HP",
+      "deadline": "-",
       "status": "未着手"
     },
     {
       "id": 10,
-      "task": "資料作成",
-      "assignee": "佐藤",
-      "project": "未分類",
-      "deadline": "12/10",
+      "task": "Youtube施策（コンセプト設計、動線設計）",
+      "assignee": "河原",
+      "project": "メディア",
+      "deadline": "1/31",
       "status": "未着手"
     }
   ],
