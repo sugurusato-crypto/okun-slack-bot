@@ -1382,10 +1382,61 @@ app.get('/health', (req, res) => {
   });
 });
 
-// 定期リマインド: 毎日9:00と18:00
-cron.schedule('0 9,18 * * *', () => {
+// 朝の挨拶メッセージを送信
+async function sendMorningGreeting() {
+  const greetings = [
+    'おはよう〜！🌅 今日も一日頑張ろう！',
+    'おはよー！☀️ 今日も素敵な一日にしよう！',
+    'おはようございます！🌞 今日のタスク、一緒に頑張ろうね！',
+    'おはよう！💪 今日も最高の一日にしよう！',
+    'グッモーニング！🌈 今日も元気に行こう！',
+  ];
+
+  const randomGreeting = greetings[Math.floor(Math.random() * greetings.length)];
+
+  // 今日のタスク概要を追加
+  const urgentCount = tasks.urgent.length;
+  const thisWeekCount = tasks.thisWeek.length;
+
+  let message = randomGreeting;
+  if (urgentCount > 0 || thisWeekCount > 0) {
+    message += `\n\n📋 今日のタスク状況:\n`;
+    if (urgentCount > 0) message += `🔴 緊急: ${urgentCount}件\n`;
+    if (thisWeekCount > 0) message += `🟡 今週: ${thisWeekCount}件\n`;
+    message += `\n何か手伝えることがあったら声かけてね！`;
+  }
+
+  try {
+    const response = await fetch('https://slack.com/api/chat.postMessage', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        channel: 'random',
+        text: message
+      })
+    });
+    const result = await response.json();
+    console.log('[Morning Greeting]', result.ok ? 'Sent!' : result.error);
+  } catch (error) {
+    console.error('[Morning Greeting] Error:', error);
+  }
+}
+
+// 定期リマインド: 毎日18:00
+cron.schedule('0 18 * * *', () => {
   console.log('Scheduled reminder check...');
   checkDeadlinesAndRemind();
+}, {
+  timezone: 'Asia/Tokyo'
+});
+
+// 朝の挨拶: 毎日9:00
+cron.schedule('0 9 * * *', () => {
+  console.log('Sending morning greeting...');
+  sendMorningGreeting();
 }, {
   timezone: 'Asia/Tokyo'
 });
