@@ -150,6 +150,64 @@ const tools = [{
         },
         required: ["assignee"]
       }
+    },
+    {
+      name: "getChannelHistory",
+      description: "Slackチャンネルの最近のメッセージ履歴を取得する。「#generalのログ見せて」「最近の会話教えて」などの依頼時に使用。",
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          channelName: {
+            type: "STRING",
+            description: "チャンネル名（#なしで指定、例: general, random, project-x）"
+          },
+          limit: {
+            type: "NUMBER",
+            description: "取得するメッセージ数（デフォルト: 20、最大: 50）"
+          }
+        },
+        required: ["channelName"]
+      }
+    },
+    {
+      name: "searchMessages",
+      description: "Slackワークスペース内のメッセージを検索する。「〜について言ってたやつ探して」「〜のメッセージ検索して」などの依頼時に使用。",
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          query: {
+            type: "STRING",
+            description: "検索クエリ（キーワード、from:ユーザー名、in:チャンネル名 などの修飾子も使用可能）"
+          },
+          limit: {
+            type: "NUMBER",
+            description: "取得する結果数（デフォルト: 10、最大: 30）"
+          }
+        },
+        required: ["query"]
+      }
+    },
+    {
+      name: "readThread",
+      description: "特定のSlackスレッドの内容を読み取る。スレッドURLやthread_tsが提供された場合に使用。「このスレッドの内容まとめて」などの依頼時に使用。",
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          channelId: {
+            type: "STRING",
+            description: "チャンネルID（例: C01ABC123）"
+          },
+          threadTs: {
+            type: "STRING",
+            description: "スレッドのタイムスタンプ（例: 1234567890.123456）"
+          },
+          limit: {
+            type: "NUMBER",
+            description: "取得するメッセージ数（デフォルト: 30、最大: 100）"
+          }
+        },
+        required: ["channelId", "threadTs"]
+      }
     }
   ]
 }];
@@ -175,6 +233,9 @@ const model = genAI.getGenerativeModel({
 - アイデア出しのサポート
 - 励ましや応援
 - リマインダー送信
+- Slackチャンネルの履歴を見る（「#generalのログ見せて」）
+- Slackメッセージの検索（「〜について言ってたやつ探して」）
+- スレッドの内容を読む（URLを貼られた時など）
 
 【大切にしていること】
 - ユーザーの話をちゃんと聞く
@@ -715,6 +776,192 @@ async function executeSendReminder(args) {
   };
 }
 
+// チャンネル履歴を取得
+async function executeGetChannelHistory(args) {
+  const channelName = args.channelName.replace(/^#/, '');
+  const limit = Math.min(args.limit || 20, 50);
+
+  try {
+    // チャンネル一覧からIDを取得
+    const listRes = await fetch('https://slack.com/api/conversations.list?types=public_channel,private_channel&limit=200', {
+      headers: { 'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}` }
+    });
+    const listData = await listRes.json();
+
+    if (!listData.ok) {
+      return { success: false, message: `チャンネル一覧の取得に失敗: ${listData.error}` };
+    }
+
+    const channel = listData.channels.find(c =>
+      c.name.toLowerCase() === channelName.toLowerCase()
+    );
+
+    if (!channel) {
+      return { success: false, message: `チャンネル「#${channelName}」が見つかりませんでした` };
+    }
+
+    // チャンネル履歴を取得
+    const historyRes = await fetch(`https://slack.com/api/conversations.history?channel=${channel.id}&limit=${limit}`, {
+      headers: { 'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}` }
+    });
+    const historyData = await historyRes.json();
+
+    if (!historyData.ok) {
+      return { success: false, message: `履歴の取得に失敗: ${historyData.error}` };
+    }
+
+    // ユーザー名キャッシュ
+    const userCache = {};
+
+    // メッセージを整形
+    const messages = [];
+    for (const msg of historyData.messages.reverse()) {
+      let userName = 'ユーザー';
+      if (msg.user) {
+        if (userCache[msg.user]) {
+          userName = userCache[msg.user];
+        } else {
+          try {
+            const userRes = await fetch(`https://slack.com/api/users.info?user=${msg.user}`, {
+              headers: { 'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}` }
+            });
+            const userData = await userRes.json();
+            if (userData.ok) {
+              userName = userData.user.real_name || userData.user.name;
+              userCache[msg.user] = userName;
+            }
+          } catch (e) {}
+        }
+      } else if (msg.bot_id) {
+        userName = 'Bot';
+      }
+
+      const timestamp = new Date(parseFloat(msg.ts) * 1000).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
+      messages.push({
+        user: userName,
+        text: msg.text?.substring(0, 300) || '',
+        timestamp: timestamp,
+        hasThread: !!msg.thread_ts
+      });
+    }
+
+    return {
+      success: true,
+      channelName: `#${channel.name}`,
+      messageCount: messages.length,
+      messages: messages
+    };
+  } catch (error) {
+    console.error('[getChannelHistory] Error:', error);
+    return { success: false, message: `エラー: ${error.message}` };
+  }
+}
+
+// メッセージを検索
+async function executeSearchMessages(args) {
+  const query = args.query;
+  const limit = Math.min(args.limit || 10, 30);
+
+  try {
+    const searchRes = await fetch(`https://slack.com/api/search.messages?query=${encodeURIComponent(query)}&count=${limit}`, {
+      headers: { 'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}` }
+    });
+    const searchData = await searchRes.json();
+
+    if (!searchData.ok) {
+      return { success: false, message: `検索に失敗: ${searchData.error}` };
+    }
+
+    if (!searchData.messages?.matches || searchData.messages.matches.length === 0) {
+      return { success: true, query: query, resultCount: 0, results: [], message: '検索結果がありませんでした' };
+    }
+
+    const results = searchData.messages.matches.map(match => ({
+      user: match.username || 'ユーザー',
+      text: match.text?.substring(0, 300) || '',
+      channel: match.channel?.name || 'unknown',
+      timestamp: new Date(parseFloat(match.ts) * 1000).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' }),
+      permalink: match.permalink
+    }));
+
+    return {
+      success: true,
+      query: query,
+      resultCount: results.length,
+      totalMatches: searchData.messages.total,
+      results: results
+    };
+  } catch (error) {
+    console.error('[searchMessages] Error:', error);
+    return { success: false, message: `エラー: ${error.message}` };
+  }
+}
+
+// スレッドを読み取る
+async function executeReadThread(args) {
+  const { channelId, threadTs } = args;
+  const limit = Math.min(args.limit || 30, 100);
+
+  try {
+    const repliesRes = await fetch(`https://slack.com/api/conversations.replies?channel=${channelId}&ts=${threadTs}&limit=${limit}`, {
+      headers: { 'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}` }
+    });
+    const repliesData = await repliesRes.json();
+
+    if (!repliesData.ok) {
+      return { success: false, message: `スレッドの取得に失敗: ${repliesData.error}` };
+    }
+
+    if (!repliesData.messages || repliesData.messages.length === 0) {
+      return { success: false, message: 'スレッドが見つかりませんでした' };
+    }
+
+    // ユーザー名キャッシュ
+    const userCache = {};
+
+    const messages = [];
+    for (const msg of repliesData.messages) {
+      let userName = 'ユーザー';
+      if (msg.user) {
+        if (userCache[msg.user]) {
+          userName = userCache[msg.user];
+        } else {
+          try {
+            const userRes = await fetch(`https://slack.com/api/users.info?user=${msg.user}`, {
+              headers: { 'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}` }
+            });
+            const userData = await userRes.json();
+            if (userData.ok) {
+              userName = userData.user.real_name || userData.user.name;
+              userCache[msg.user] = userName;
+            }
+          } catch (e) {}
+        }
+      } else if (msg.bot_id) {
+        userName = 'Bot';
+      }
+
+      const timestamp = new Date(parseFloat(msg.ts) * 1000).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
+      messages.push({
+        user: userName,
+        text: msg.text || '',
+        timestamp: timestamp
+      });
+    }
+
+    return {
+      success: true,
+      channelId: channelId,
+      threadTs: threadTs,
+      messageCount: messages.length,
+      messages: messages
+    };
+  } catch (error) {
+    console.error('[readThread] Error:', error);
+    return { success: false, message: `エラー: ${error.message}` };
+  }
+}
+
 // ツール実行のディスパッチャー
 async function executeTool(name, args) {
   console.log(`[Agent] Executing tool: ${name}`, args);
@@ -734,6 +981,12 @@ async function executeTool(name, args) {
       return executeUpdateTaskStatus(args);
     case 'sendReminder':
       return await executeSendReminder(args);
+    case 'getChannelHistory':
+      return await executeGetChannelHistory(args);
+    case 'searchMessages':
+      return await executeSearchMessages(args);
+    case 'readThread':
+      return await executeReadThread(args);
     default:
       return { success: false, message: `Unknown tool: ${name}` };
   }
@@ -1542,5 +1795,6 @@ app.listen(PORT, () => {
   console.log(`🤖 オーくん Agent running on port ${PORT}`);
   console.log(`📋 Tasks: ${tasks.urgent.length} urgent, ${tasks.thisWeek.length} this week`);
   console.log(`⏰ Reminder schedule: 9:00 & 18:00 JST`);
-  console.log(`🔧 Tools: addTask, completeTask, deleteTask, listTasks, searchTasks, updateTaskStatus, sendReminder`);
+  console.log(`🔧 Task Tools: addTask, completeTask, deleteTask, listTasks, searchTasks, updateTaskStatus, sendReminder`);
+  console.log(`📨 Slack Tools: getChannelHistory, searchMessages, readThread`);
 });
