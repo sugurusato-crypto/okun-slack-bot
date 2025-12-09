@@ -201,6 +201,8 @@ const TASKS_FILE = path.join(__dirname, 'tasks.json');
 const CONVERSATIONS_DIR = path.join(__dirname, 'conversations');
 const LEARNINGS_FILE = path.join(__dirname, 'learnings.json');
 const MAX_HISTORY_PER_USER = 50; // ユーザーごとの最大履歴数
+const THREAD_HISTORY_LIMIT = 30; // スレッド履歴の取得件数
+const USER_CONTEXT_LIMIT = 15; // コンテキストに含めるユーザー履歴件数
 
 // conversationsディレクトリがなければ作成
 if (!fs.existsSync(CONVERSATIONS_DIR)) {
@@ -311,6 +313,124 @@ function addLearning(type, content) {
     }
   }
   saveLearnings(learnings);
+}
+
+// ==========================================
+// 統一コンテキスト取得関数
+// ==========================================
+async function getUnifiedContext(options) {
+  const {
+    userId,
+    userName,
+    channel,
+    threadTs,
+    messageTs,
+    currentMessage
+  } = options;
+
+  let contextParts = [];
+
+  // 1. スレッド履歴を取得（threadTsがある場合）
+  if (threadTs && channel) {
+    try {
+      const repliesRes = await fetch(
+        `https://slack.com/api/conversations.replies?channel=${channel}&ts=${threadTs}&limit=${THREAD_HISTORY_LIMIT}`,
+        { headers: { 'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}` } }
+      );
+      const repliesData = await repliesRes.json();
+
+      if (repliesData.ok && repliesData.messages && repliesData.messages.length > 0) {
+        const userNameCache = {};
+        const threadHistory = [];
+
+        for (const msg of repliesData.messages) {
+          // 現在のメッセージはスキップ
+          if (msg.ts === messageTs) continue;
+
+          let msgUserName = 'ユーザー';
+          if (msg.user) {
+            if (userNameCache[msg.user]) {
+              msgUserName = userNameCache[msg.user];
+            } else {
+              try {
+                const msgUserRes = await fetch(`https://slack.com/api/users.info?user=${msg.user}`, {
+                  headers: { 'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}` }
+                });
+                const msgUserInfo = await msgUserRes.json();
+                if (msgUserInfo.ok) {
+                  msgUserName = msgUserInfo.user.real_name || msgUserInfo.user.name;
+                  userNameCache[msg.user] = msgUserName;
+                }
+              } catch (e) {
+                console.log(`[Context] Failed to get user name for ${msg.user}`);
+              }
+            }
+          } else if (msg.bot_id) {
+            msgUserName = 'オーくん';
+          }
+
+          const cleanMsgText = (msg.text || '').replace(/<@[A-Z0-9]+>/g, '').trim();
+          if (cleanMsgText) {
+            threadHistory.push(`${msgUserName}: ${cleanMsgText}`);
+          }
+        }
+
+        if (threadHistory.length > 0) {
+          contextParts.push(`【このスレッドの会話履歴（${threadHistory.length}件）】\n${threadHistory.join('\n')}`);
+        }
+      }
+    } catch (error) {
+      console.error('[Context] Error fetching thread history:', error);
+    }
+  }
+
+  // 2. ユーザーの過去の会話履歴を取得
+  const recentHistory = getUserRecentHistory(userId, USER_CONTEXT_LIMIT);
+  if (recentHistory.length > 0) {
+    const historyText = recentHistory.map(h =>
+      `${h.role === 'user' ? userName : 'オーくん'}: ${h.content.substring(0, 150)}${h.content.length > 150 ? '...' : ''}`
+    ).join('\n');
+    contextParts.push(`【${userName}さんとの過去の会話（${recentHistory.length}件）】\n${historyText}`);
+  }
+
+  // 3. 現在のタスク状況
+  const taskContext = `【現在のタスク状況】
+緊急タスク: ${tasks.urgent.length}件
+${tasks.urgent.map(t => `  [${t.id}] ${t.task} (担当:${t.assignee}, 期限:${t.deadline})`).join('\n')}
+
+今週のタスク: ${tasks.thisWeek.length}件
+${tasks.thisWeek.map(t => `  [${t.id}] ${t.task} (担当:${t.assignee}, 期限:${t.deadline})`).join('\n')}`;
+  contextParts.push(taskContext);
+
+  // 4. 現在のメッセージ
+  contextParts.push(`【${userName}さんの今のメッセージ】\n${currentMessage}`);
+
+  return contextParts.join('\n\n');
+}
+
+// スレッドリンクからthread_tsを抽出する関数
+function extractThreadTsFromUrl(url) {
+  const permalinkMatch = url.match(/\/p(\d{10})(\d{6})?/);
+  if (permalinkMatch) {
+    return permalinkMatch[1] + '.' + (permalinkMatch[2] || '000000');
+  }
+  return null;
+}
+
+// スレッドリンクとチャンネルIDを抽出
+function extractSlackLinkInfo(text) {
+  const slackLinkMatch = text?.match(/<(https:\/\/[^|>]+\.slack\.com\/archives\/([^/|>]+)\/p[^|>]+)(\|[^>]*)?>/) ||
+                         text?.match(/(https:\/\/[^\s]+\.slack\.com\/archives\/([^/\s]+)\/p[^\s]+)/);
+
+  if (slackLinkMatch) {
+    const url = slackLinkMatch[1];
+    const channelId = slackLinkMatch[2];
+    const threadTs = extractThreadTsFromUrl(url);
+    const cleanText = text.replace(slackLinkMatch[0], '').trim();
+    return { url, channelId, threadTs, cleanText, hasLink: true };
+  }
+
+  return { cleanText: text, hasLink: false };
 }
 
 // CEO（佐藤）のSlack ID
@@ -622,32 +742,17 @@ async function executeTool(name, args) {
 // ==========================================
 // エージェントループ
 // ==========================================
-async function runAgent(userMessage, userId, userName) {
-  console.log(`[Agent] Starting for user: ${userName}, message: ${userMessage}`);
-
-  // ユーザーの過去の会話履歴を取得
-  const recentHistory = getUserRecentHistory(userId, 5);
-  const historyContext = recentHistory.length > 0
-    ? `【${userName}さんとの最近の会話】\n${recentHistory.map(h => `${h.role === 'user' ? userName : 'オーくん'}: ${h.content.substring(0, 100)}...`).join('\n')}\n`
-    : '';
-
-  // 現在のタスク状況をコンテキストとして追加
-  const taskContext = `
-【現在のタスク状況】
-緊急タスク: ${tasks.urgent.length}件
-${tasks.urgent.map(t => `  [${t.id}] ${t.task} (担当:${t.assignee}, 期限:${t.deadline})`).join('\n')}
-
-今週のタスク: ${tasks.thisWeek.length}件
-${tasks.thisWeek.map(t => `  [${t.id}] ${t.task} (担当:${t.assignee}, 期限:${t.deadline})`).join('\n')}
-`;
+async function runAgent(unifiedContext, userId, userName) {
+  console.log(`[Agent] Starting for user: ${userName}`);
+  console.log(`[Agent] Context length: ${unifiedContext.length} chars`);
 
   // チャット履歴を構築
   const chat = model.startChat({
     history: [],
   });
 
-  // ユーザーメッセージを送信（過去の会話履歴も含める）
-  const fullMessage = `${historyContext}${taskContext}\n\nユーザー(${userName})からのメッセージ: ${userMessage}`;
+  // 統一コンテキストをそのまま使用
+  const fullMessage = unifiedContext;
 
   let response = await chat.sendMessage(fullMessage);
   let result = response.response;
@@ -897,46 +1002,51 @@ async function checkDeadlinesAndRemind() {
 // Slack Slash Command ハンドラー
 app.post('/slack/command', async (req, res) => {
   const { text, user_name, user_id, command, response_url, channel_id } = req.body;
-  console.log(`Command: ${command}, Text: ${text}, User: ${user_name}, Channel: ${channel_id}`);
+  console.log(`[Slash] Command: ${command}, Text: ${text}, User: ${user_name}, Channel: ${channel_id}`);
 
-  // スレッドリンクからthread_tsを抽出する関数
-  function extractThreadTs(inputText) {
-    // Slack permalink format: https://xxx.slack.com/archives/CHANNEL/p1234567890123456
-    // または /p1234567890123456 の部分
-    const permalinkMatch = inputText.match(/\/p(\d{10})(\d{6})?/);
-    if (permalinkMatch) {
-      const ts = permalinkMatch[1] + '.' + (permalinkMatch[2] || '000000');
-      return ts;
-    }
-    return null;
-  }
+  // スレッドリンクを抽出（統一関数を使用）
+  const linkInfo = extractSlackLinkInfo(text);
+  const threadTs = linkInfo.threadTs;
+  const linkedChannel = linkInfo.channelId || channel_id;
+  const cleanText = linkInfo.cleanText || '';
 
-  // スレッドリンクをテキストから抽出
-  const slackLinkMatch = text?.match(/<(https:\/\/[^|>]+\.slack\.com\/archives\/[^|>]+)(\|[^>]*)?>/) ||
-                         text?.match(/(https:\/\/[^\s]+\.slack\.com\/archives\/[^\s]+)/);
-  let threadTs = null;
-  let cleanText = text || '';
-
-  if (slackLinkMatch) {
-    const slackUrl = slackLinkMatch[1];
-    threadTs = extractThreadTs(slackUrl);
-    // URLをテキストから除去
-    cleanText = text.replace(slackLinkMatch[0], '').trim();
-    console.log(`[Slash] Detected thread link, thread_ts: ${threadTs}`);
+  if (linkInfo.hasLink) {
+    console.log(`[Slash] Detected thread link - channel: ${linkedChannel}, thread_ts: ${threadTs}`);
   }
 
   // 即座に処理中メッセージを返す
   res.json({
-    response_type: "ephemeral", // 本人にだけ見える処理中メッセージ
+    response_type: "ephemeral",
     text: `⏳ 処理中...`
   });
 
   try {
-    const agentResponse = await runAgent(cleanText || 'タスク一覧を見せて', user_id, user_name);
+    // 統一コンテキストを取得
+    const unifiedContext = await getUnifiedContext({
+      userId: user_id,
+      userName: user_name,
+      channel: linkedChannel,
+      threadTs: threadTs,
+      messageTs: null,
+      currentMessage: cleanText || 'タスク一覧を見せて'
+    });
+
+    const agentResponse = await runAgent(unifiedContext, user_id, user_name);
+
+    // 会話履歴に追加
+    addToUserHistory(user_id, user_name, 'user', cleanText || 'タスク一覧を見せて', {
+      type: 'slash',
+      channel: linkedChannel,
+      threadTs
+    });
+    addToUserHistory(user_id, user_name, 'assistant', agentResponse, {
+      type: 'slash',
+      channel: linkedChannel,
+      threadTs
+    });
 
     // スレッドtsがある場合はスレッドに返信、なければチャンネルに投稿
-    if (threadTs && channel_id) {
-      // スレッドに返信
+    if (threadTs && linkedChannel) {
       await fetch('https://slack.com/api/chat.postMessage', {
         method: 'POST',
         headers: {
@@ -944,18 +1054,17 @@ app.post('/slack/command', async (req, res) => {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          channel: channel_id,
+          channel: linkedChannel,
           thread_ts: threadTs,
           text: agentResponse
         })
       });
       console.log(`[Slash] Responded in thread ${threadTs}`);
     } else if (response_url) {
-      // 通常のレスポンス
       await sendDelayedResponse(response_url, agentResponse);
     }
   } catch (error) {
-    console.error('Error processing:', error);
+    console.error('[Slash] Error:', error);
     if (response_url) {
       await sendDelayedResponse(response_url, `❌ エラーが発生しました: ${error.message}`);
     }
@@ -1103,66 +1212,15 @@ app.post('/slack/events', async (req, res) => {
 
         console.log(`[app_mention] Processing message from ${userName}: ${cleanMessage}`);
 
-        // スレッド内の場合、過去のメッセージを取得してコンテキストを構築
-        let contextMessage = cleanMessage;
-        if (threadTs) {
-          try {
-            const repliesRes = await fetch(
-              `https://slack.com/api/conversations.replies?channel=${channel}&ts=${threadTs}&limit=20`,
-              { headers: { 'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}` } }
-            );
-            const repliesData = await repliesRes.json();
-
-            if (repliesData.ok && repliesData.messages && repliesData.messages.length > 1) {
-              // ユーザー名のキャッシュを作成
-              const userNameCache = {};
-
-              // 過去のメッセージを整形（自分のメッセージ以外、最新20件まで）
-              const threadHistory = [];
-              for (const msg of repliesData.messages) {
-                // 現在のメンションメッセージはスキップ（最後に追加する）
-                if (msg.ts === messageTs) continue;
-
-                // ユーザー名を取得（キャッシュ使用）
-                let msgUserName = 'ユーザー';
-                if (msg.user) {
-                  if (userNameCache[msg.user]) {
-                    msgUserName = userNameCache[msg.user];
-                  } else {
-                    try {
-                      const msgUserRes = await fetch(`https://slack.com/api/users.info?user=${msg.user}`, {
-                        headers: { 'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}` }
-                      });
-                      const msgUserInfo = await msgUserRes.json();
-                      if (msgUserInfo.ok) {
-                        msgUserName = msgUserInfo.user.real_name || msgUserInfo.user.name;
-                        userNameCache[msg.user] = msgUserName;
-                      }
-                    } catch (e) {
-                      console.log(`[app_mention] Failed to get user name for ${msg.user}`);
-                    }
-                  }
-                } else if (msg.bot_id) {
-                  msgUserName = 'オーくん';
-                }
-
-                // メンション部分を除去
-                const cleanMsgText = (msg.text || '').replace(/<@[A-Z0-9]+>/g, '').trim();
-                if (cleanMsgText) {
-                  threadHistory.push(`${msgUserName}: ${cleanMsgText}`);
-                }
-              }
-
-              if (threadHistory.length > 0) {
-                console.log(`[app_mention] Found ${threadHistory.length} previous messages in thread`);
-                contextMessage = `【スレッドの会話履歴】\n${threadHistory.join('\n')}\n\n【今の質問・依頼】\n${userName}: ${cleanMessage}`;
-              }
-            }
-          } catch (threadError) {
-            console.error('[app_mention] Error fetching thread history:', threadError);
-            // エラーでもメイン処理は続行
-          }
-        }
+        // 統一コンテキストを取得（スレッド履歴 + ユーザー履歴を含む）
+        const unifiedContext = await getUnifiedContext({
+          userId: userId,
+          userName: userName,
+          channel: channel,
+          threadTs: threadTs,  // スレッド内ならスレッド履歴も取得
+          messageTs: messageTs,
+          currentMessage: cleanMessage
+        });
 
         // 会話履歴に追加
         addToUserHistory(userId, userName, 'user', cleanMessage, {
@@ -1171,8 +1229,8 @@ app.post('/slack/events', async (req, res) => {
           threadTs: threadTs || messageTs
         });
 
-        // エージェントで応答を生成（スレッドコンテキスト付き）
-        const agentResponse = await runAgent(contextMessage, userId, userName);
+        // エージェントで応答を生成（統一コンテキスト使用）
+        const agentResponse = await runAgent(unifiedContext, userId, userName);
 
         // 会話履歴に追加（アシスタント応答）
         addToUserHistory(userId, userName, 'assistant', agentResponse, {
@@ -1197,8 +1255,10 @@ app.post('/slack/events', async (req, res) => {
     if (event.type === 'message' && event.channel_type === 'im') {
       const userMessage = event.text;
       const userId = event.user;
+      const channel = event.channel;
+      const messageTs = event.ts;
 
-      console.log(`DM from ${userId}: ${userMessage}`);
+      console.log(`[DM] from ${userId}: ${userMessage}`);
 
       // 即座に200を返す（3秒タイムアウト対策）
       res.status(200).send('ok');
@@ -1211,20 +1271,30 @@ app.post('/slack/events', async (req, res) => {
         const userInfo = await userInfoRes.json();
         const userName = userInfo.ok ? (userInfo.user.real_name || userInfo.user.name) : 'ユーザー';
 
-        // 会話履歴に追加（ユーザーメッセージ）
-        addToUserHistory(userId, userName, 'user', userMessage, { type: 'dm' });
+        // 統一コンテキストを取得（DMなのでスレッド履歴はないが、ユーザー履歴は含まれる）
+        const unifiedContext = await getUnifiedContext({
+          userId: userId,
+          userName: userName,
+          channel: channel,
+          threadTs: null,  // DMにはスレッドなし
+          messageTs: messageTs,
+          currentMessage: userMessage
+        });
 
-        // エージェントを実行
-        const agentResponse = await runAgent(userMessage, userId, userName);
+        // 会話履歴に追加（ユーザーメッセージ）
+        addToUserHistory(userId, userName, 'user', userMessage, { type: 'dm', channel });
+
+        // エージェントを実行（統一コンテキスト使用）
+        const agentResponse = await runAgent(unifiedContext, userId, userName);
 
         // 会話履歴に追加（アシスタント応答）
-        addToUserHistory(userId, userName, 'assistant', agentResponse, { type: 'dm' });
+        addToUserHistory(userId, userName, 'assistant', agentResponse, { type: 'dm', channel });
 
         // DMに返信
         await sendSlackDM(userId, agentResponse);
 
       } catch (error) {
-        console.error('DM processing error:', error);
+        console.error('[DM] processing error:', error);
         await sendSlackDM(userId, `❌ エラーが発生しました: ${error.message}`);
       }
 
@@ -1257,28 +1327,22 @@ app.post('/slack/events', async (req, res) => {
 
         // スレッド返信の場合 → 条件付きでエージェントで会話
         if (threadTs) {
-          console.log(`Thread reply from ${userName}: ${userMessage.substring(0, 50)}...`);
+          console.log(`[Thread] Reply from ${userName}: ${userMessage.substring(0, 50)}...`);
 
-          // スレッドの履歴を取得
-          const historyRes = await fetch(`https://slack.com/api/conversations.replies?channel=${channel}&ts=${threadTs}&limit=20`, {
+          // ボットがスレッドに参加しているかを確認するためにスレッド履歴を取得
+          const historyRes = await fetch(`https://slack.com/api/conversations.replies?channel=${channel}&ts=${threadTs}&limit=10`, {
             headers: { 'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}` }
           });
           const historyData = await historyRes.json();
 
           // ボットがすでにスレッドに参加しているかチェック
           let botAlreadyInThread = false;
-          let conversationHistory = '';
           if (historyData.ok && historyData.messages) {
             for (const msg of historyData.messages) {
               if (msg.bot_id) {
                 botAlreadyInThread = true;
+                break;
               }
-            }
-            // 会話履歴をフォーマット
-            for (const msg of historyData.messages.slice(-10)) {
-              const isBot = msg.bot_id ? true : false;
-              const sender = isBot ? 'オーくん' : userName;
-              conversationHistory += `${sender}: ${msg.text}\n`;
             }
           }
 
@@ -1295,16 +1359,21 @@ app.post('/slack/events', async (req, res) => {
 
           console.log(`[Thread] Responding - botInThread: ${botAlreadyInThread}, mentioned: ${isMentioned}`);
 
+          // 統一コンテキストを取得（スレッド履歴 + ユーザー履歴を含む）
+          const unifiedContext = await getUnifiedContext({
+            userId: userId,
+            userName: userName,
+            channel: channel,
+            threadTs: threadTs,
+            messageTs: messageTs,
+            currentMessage: userMessage
+          });
+
           // 会話履歴に追加（ユーザーメッセージ）
           addToUserHistory(userId, userName, 'user', userMessage, { type: 'thread', channel, threadTs });
 
-          // スレッドの会話履歴をコンテキストに含める
-          const contextMessage = conversationHistory
-            ? `【スレッドの会話履歴】\n${conversationHistory}\n【今のメッセージ】\n${userName}: ${userMessage}`
-            : userMessage;
-
-          // エージェントで返答生成（ツール機能付き）
-          const agentResponse = await runAgent(contextMessage, userId, userName);
+          // エージェントで返答生成（統一コンテキスト使用）
+          const agentResponse = await runAgent(unifiedContext, userId, userName);
 
           // 会話履歴に追加（アシスタント応答）
           addToUserHistory(userId, userName, 'assistant', agentResponse, { type: 'thread', channel, threadTs });

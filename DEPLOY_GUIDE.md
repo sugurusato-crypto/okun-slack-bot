@@ -25,13 +25,13 @@ Slack タスク管理Bot「okun-slack-bot」をRenderにデプロイする手順
 1. ダッシュボードで **「New」** をクリック
 2. **「Web Service」** を選択
 3. **「Build and deploy from a Git repository」** を選択
-4. リポジトリ **`gonta223/okun-slack-bot`** を選択
+4. リポジトリ **`sugurusato-crypto/okun-slack-bot`** を選択
 
 ### Step 3: サービス設定
 
 | 項目 | 設定値 |
 |------|--------|
-| Name | `okun-slack-bot` |
+| Name | `okun-slack-bot-uravation` |
 | Region | `Singapore` |
 | Branch | `main` |
 | Runtime | `Node` |
@@ -52,7 +52,7 @@ SLACK_BOT_TOKEN=xoxb-your-slack-bot-token
 ### Step 6: デプロイ
 1. **「Create Web Service」** をクリック
 2. デプロイが完了するまで待機（約2-3分）
-3. 生成されたURL（例: `https://okun-slack-bot.onrender.com`）をコピー
+3. 生成されたURL: `https://okun-slack-bot-uravation.onrender.com`
 
 ---
 
@@ -64,7 +64,7 @@ SLACK_BOT_TOKEN=xoxb-your-slack-bot-token
 3. **「Event Subscriptions」** をクリック
 4. **「Request URL」** に以下を入力:
    ```
-   https://okun-slack-bot.onrender.com/slack/events
+   https://okun-slack-bot-uravation.onrender.com/slack/events
    ```
 5. URL Verificationが成功することを確認
 6. **「Save Changes」** をクリック
@@ -93,11 +93,26 @@ SLACK_BOT_TOKEN=xoxb-your-slack-bot-token
 ---
 
 ## 関連リンク
-- GitHub: https://github.com/gonta223/okun-slack-bot
+- GitHub: https://github.com/sugurusato-crypto/okun-slack-bot
 - Render Dashboard: https://dashboard.render.com
+- Render Service: https://dashboard.render.com/web/srv-d4rh8ekhg0os73an7dm0
 - Slack API: https://api.slack.com/apps
 
 ---
 
+## デプロイ済み情報
+| 項目 | 値 |
+|------|-----|
+| Service ID | srv-d4rh8ekhg0os73an7dm0 |
+| URL | https://okun-slack-bot-uravation.onrender.com |
+| Repository | sugurusato-crypto/okun-slack-bot |
+| Branch | main |
+| Runtime | Node |
+| Region | Singapore |
+| Tier | Free |
+
+---
+
 ## 更新履歴
+- 2025-12-09: デプロイ完了、実際の情報で更新
 - 2024-12-08: 初版作成
