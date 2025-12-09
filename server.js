@@ -799,10 +799,24 @@ async function runAgent(unifiedContext, userId, userName) {
     part => part.text
   );
 
-  const finalText = textParts?.map(p => p.text).join('\n') || 'すみません、うまく処理できませんでした。';
+  let finalText = textParts?.map(p => p.text).join('\n') || 'すみません、うまく処理できませんでした。';
+
+  // Slack向けにアスタリスクを除去（Geminiが守らないことがあるため強制）
+  finalText = cleanSlackFormatting(finalText);
 
   console.log(`[Agent] Completed. Loops: ${loopCount}`);
   return finalText;
+}
+
+// Slack向けフォーマット整形（アスタリスク除去）
+function cleanSlackFormatting(text) {
+  return text
+    // **太字** → 「太字」に変換
+    .replace(/\*\*([^*]+)\*\*/g, '「$1」')
+    // *イタリック* → そのままテキストに
+    .replace(/\*([^*]+)\*/g, '$1')
+    // 残った単独アスタリスクを除去
+    .replace(/\*/g, '');
 }
 
 // ==========================================
@@ -864,7 +878,10 @@ ${userMessage}
       part => part.text
     );
 
-    const finalText = textParts?.map(p => p.text).join('\n') || 'ごめん、ちょっとうまく返せなかった...もう一回言ってもらえる？';
+    let finalText = textParts?.map(p => p.text).join('\n') || 'ごめん、ちょっとうまく返せなかった...もう一回言ってもらえる？';
+
+    // Slack向けにアスタリスクを除去
+    finalText = cleanSlackFormatting(finalText);
 
     console.log(`[ThreadAgent] Response generated for ${userName}`);
     return finalText;
