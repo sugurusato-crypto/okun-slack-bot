@@ -1702,6 +1702,46 @@ app.get('/tasks', (req, res) => {
   res.json(tasks);
 });
 
+// Webダッシュボード用API（フラット配列形式）
+app.get('/api/tasks', (req, res) => {
+  try {
+    // 全タスクをフラット配列に変換
+    const allTasks = [
+      ...tasks.urgent.map(t => ({ ...t, priority: 'urgent' })),
+      ...tasks.thisWeek.map(t => ({ ...t, priority: 'thisWeek' })),
+      ...tasks.completed.map(t => ({ ...t, priority: t.priority || 'thisWeek' }))
+    ];
+
+    // 優先度と作成日時でソート（緊急 > 今週、新しい順）
+    const sortedTasks = allTasks.sort((a, b) => {
+      if (a.priority === 'urgent' && b.priority !== 'urgent') return -1;
+      if (a.priority !== 'urgent' && b.priority === 'urgent') return 1;
+
+      const aDate = new Date(a.createdAt || 0).getTime();
+      const bDate = new Date(b.createdAt || 0).getTime();
+      return bDate - aDate;
+    });
+
+    res.json({
+      tasks: sortedTasks.map(t => ({
+        id: t.id.toString(),
+        task: t.task,
+        assignee: t.assignee || '-',
+        project: t.project || '未分類',
+        deadline: t.deadline || '未定',
+        priority: t.priority,
+        status: t.status,
+        created_at: t.createdAt,
+        completed_at: t.completedAt || '',
+        created_by: 'system'
+      }))
+    });
+  } catch (error) {
+    console.error('Error in /api/tasks:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // メンバーマッピングAPI
 app.post('/members', (req, res) => {
   const { name, slackId } = req.body;
